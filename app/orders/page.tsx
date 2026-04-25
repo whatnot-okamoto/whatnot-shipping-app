@@ -1,0 +1,164 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import OrderCard, { type Order } from "./components/OrderCard";
+import SessionStatusBar from "./components/SessionStatusBar";
+
+type SessionInfo = {
+  session_status: "none" | "active" | "unlocked" | "completed";
+  locked_bundle_group_ids: string[];
+  refetch_done_flag: boolean;
+  diff_confirmed_flag: boolean;
+};
+
+type Meta = {
+  total_order_count: number;
+  uninitialized_count: number;
+  unselectable_count: number;
+};
+
+type ApiResponse = {
+  success: boolean;
+  status: string;
+  session: SessionInfo;
+  orders: Order[];
+  meta: Meta;
+  error?: string;
+};
+
+// ORDER-SNAPSHOT-01 準拠：APIレスポンス順を基本とする
+// 以下の先頭グループ注文が既に先頭に来ているか念のため補助ソートを適用する
+// 先頭グループ: needs_initialization / has_multiple_shipping_lines /
+//              has_unknown_shipping_method / hold_flag
+// ※ selectable=false 全体を先頭にする独自ソートは行わない
+function sortOrders(orders: Order[]): Order[] {
+  const isTopGroup = (o: Order) =>
+    o.needs_initialization ||
+    o.has_multiple_shipping_lines ||
+    o.has_unknown_shipping_method ||
+    o.hold_flag;
+
+  return [...orders].sort((a, b) => {
+    const aTop = isTopGroup(a);
+    const bTop = isTopGroup(b);
+    if (aTop !== bTop) return aTop ? -1 : 1;
+    if (a.order_date !== b.order_date) return a.order_date < b.order_date ? -1 : 1;
+    return a.unique_key < b.unique_key ? -1 : 1;
+  });
+}
+
+export default function OrdersPage() {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [session, setSession] = useState<SessionInfo>({
+    session_status: "none",
+    locked_bundle_group_ids: [],
+    refetch_done_flag: false,
+    diff_confirmed_flag: false,
+  });
+  const [meta, setMeta] = useState<Meta>({
+    total_order_count: 0,
+    uninitialized_count: 0,
+    unselectable_count: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Step 4-B の session/start 連携に備えて選択済み unique_key を管理する
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    fetch("/api/orders/list")
+      .then((res) => res.json() as Promise<ApiResponse>)
+      .then((data) => {
+        if (!data.success) {
+          setFetchError(data.error ?? "注文一覧の取得に失敗しました");
+          return;
+        }
+        setOrders(sortOrders(data.orders));
+        setSession(data.session);
+        setMeta(data.meta);
+      })
+      .catch(() => setFetchError("ネットワークエラーが発生しました"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleCheck = (uniqueKey: string, checked: boolean) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(uniqueKey);
+      else next.delete(uniqueKey);
+      return next;
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500 text-sm">読み込み中...</p>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <p className="text-red-600 font-medium text-sm">{fetchError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-3 text-sm text-blue-600 underline"
+          >
+            再読み込み
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* セッションステータスバー（画面上部固定） */}
+      <div className="sticky top-0 z-10 shadow-sm">
+        <SessionStatusBar
+          sessionStatus={session.session_status}
+          lockedBundleGroupIds={session.locked_bundle_group_ids}
+          refetchDoneFlag={session.refetch_done_flag}
+          diffConfirmedFlag={session.diff_confirmed_flag}
+        />
+      </div>
+
+      <div className="max-w-3xl mx-auto px-4 py-4">
+        {/* メタ情報バー */}
+        <div className="flex items-center gap-4 mb-4 text-sm text-gray-600 flex-wrap">
+          <span className="font-medium">注文一覧</span>
+          <span>全 {meta.total_order_count} 件</span>
+          {meta.unselectable_count > 0 && (
+            <span className="text-orange-600">選択不可：{meta.unselectable_count} 件</span>
+          )}
+          {meta.uninitialized_count > 0 && (
+            <span className="text-red-600">未初期化：{meta.uninitialized_count} 件</span>
+          )}
+          {selectedKeys.size > 0 && (
+            <span className="text-blue-700 font-medium">選択中：{selectedKeys.size} 件</span>
+          )}
+        </div>
+
+        {/* 注文カード一覧 */}
+        {orders.length > 0 ? (
+          <div className="flex flex-col gap-3">
+            {orders.map((order) => (
+              <OrderCard
+                key={order.unique_key}
+                order={order}
+                checked={selectedKeys.has(order.unique_key)}
+                onCheck={handleCheck}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-center text-gray-500 py-16 text-sm">表示できる注文がありません</p>
+        )}
+      </div>
+    </div>
+  );
+}
