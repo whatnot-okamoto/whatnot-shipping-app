@@ -7,37 +7,66 @@ const BASE_API_BASE_URL =
   process.env.BASE_API_BASE_URL ?? "https://api.thebase.in/1";
 
 // ============================================================================
-// 型定義
+// 型定義（ORDER-FIELD-01準拠）
 // ============================================================================
 
+/**
+ * 注文一覧APIのサマリー型（GET /orders レスポンス）。
+ * order_items / order_receiver / shipping_lines は含まない。
+ * 詳細が必要な場合は fetchOrderDetail(unique_key) を使うこと。
+ */
+export type BaseOrderSummary = {
+  unique_key: string;
+  ordered: number;            // Unix秒
+  cancelled: number | null;
+  dispatched: number | null;
+  payment: string;
+  first_name: string;
+  last_name: string;
+  total: number;
+  delivery_date: string | null;
+  delivery_time_zone: string | null;
+  terminated: boolean;
+  dispatch_status: string;
+  modified: number;           // Unix秒
+};
+
+/**
+ * 商品明細（ORDER-FIELD-01準拠）。
+ * - title   : 商品名（item_title は存在しない）
+ * - amount  : 数量（quantity は存在しない）
+ * - order_item_ids（shipping_lines側）はstring[]のため、照合時は String(order_item_id) で変換すること
+ */
 export type BaseOrderItem = {
   order_item_id: number;
   item_id: number;
-  item_title: string;
-  barcode: string;      // JANコード（スキャン照合用。識別子ではない。DATA-01 U4準拠）
-  quantity: number;
+  variation_id: number;
+  title: string;
+  barcode: string;            // JANコード（スキャン照合用。識別子ではない）
+  variation: string;
+  variation_identifier: string;
+  amount: number;
   price: number;
-  status: string;       // "ordered" / "cancelled" など。T3差分検知に使用
+  status: string;             // "ordered" / "cancelled" など
 };
 
-// 配送方法関連フィールド:
-//   設計上必要な配送方法関連情報が取得できることを目的として、
-//   shipping_method（単一文字列）と shipping_lines（配列）の両方を保持する。
-//   実機確認前のため、BASE APIがどちらのパターンで返すかが未確定（実装参照文書 §10 確認項目5参照）。
-//   ORDER-01でのカテゴリ判定はこれらのフィールドをもとに実装する。
+/**
+ * 配送方法情報（ORDER-FIELD-01準拠）。
+ * - order_item_ids : string[]（APIがstring配列で返す。numberへの変換禁止）
+ * - shipping_method: 配送方法判定の正（トップレベルのshipping_methodは常にnullのため使用禁止）
+ * - shipping_fee   : 送料の正（トップレベルのshipping_feeは参照禁止）
+ */
 export type BaseShippingLine = {
-  method: string;
-  fee: number;
+  order_item_ids: string[];
+  shipping_method: string;
+  shipping_fee: number;
 };
 
 /**
  * お届け先情報（order_receiver）。
  * 実機確認（C-1）により確定したキー名を使用。
  *
- * 姓名フィールドの注意:
- *   - キー名は first_name / last_name（名 / 姓の順でフィールドが存在する）
- *   - フルネームを組み立てる際は必ず last_name + first_name（姓→名）の順にする
- *   - first_name + last_name（名→姓）順での連結は禁止
+ * フルネーム連結順: last_name（姓）+ first_name（名）。名→姓順の連結は禁止。
  */
 export type BaseOrderReceiver = {
   last_name: string;
@@ -51,45 +80,48 @@ export type BaseOrderReceiver = {
   country_code: string;
 };
 
+/**
+ * 注文詳細型（GET /orders/detail/{unique_key} レスポンス）。
+ * ORDER-FIELD-01準拠。
+ *
+ * shipping_method（トップレベル）は常にnullのため使用禁止。
+ * 配送方法判定は shipping_lines[].shipping_method を使うこと。
+ * 送料は shipping_lines[].shipping_fee を使うこと。
+ */
 export type BaseOrder = {
-  order_id: number;
-  ordered_at: string;
+  unique_key: string;         // 注文識別子（order_id は存在しない）
+  ordered: number;            // 注文日時Unix秒（ordered_at は存在しない）
+  cancelled: number | null;
+  dispatched: number | null;
   dispatch_status: string;
-
-  // 配送方法関連（実機確認前につき両パターンを保持。確認後に参照先を確定すること）
-  shipping_method: string;              // パターンA: 単一文字列
-  shipping_lines: BaseShippingLine[];   // パターンB: 配列形式。存在しない場合は空配列
-  shipping_fee: number;
-  total_price: number;
-  remark: string;                       // 注文備考（BASE APIに書き込みAPIなし。読み取り専用）
-
-  // 購入者情報（order_purchaser相当のトップレベルフィールド）
-  // 用途: D6（注文一覧表示）・D5（領収書入力補助）・フォールバック源（DEST-01準拠）
-  last_name: string;
-  first_name: string;
+  payment: string;
+  shipping_method: null;      // 常にnull。使用禁止。shipping_lines を参照すること
+  shipping_fee: number;       // 存在するがcanonicalではない。shipping_lines[].shipping_fee を使うこと
+  total: number;              // 注文合計金額（total_price は存在しない）
+  first_name: string;         // 購入者（名）
+  last_name: string;          // 購入者（姓）
   zip_code: string;
   prefecture: string;
   address: string;
   address2: string;
   tel: string;
-
-  // お届け先情報（DEST-01 D1/D2/D3/D7 の基本データソース）
-  // null = お届け先が購入者と同一（または存在しない）。フォールバック発動条件（DEST-01 §5）。
+  remark: string;
+  modified: number;
+  terminated: boolean;
   order_receiver: BaseOrderReceiver | null;
-
   order_items: BaseOrderItem[];
+  shipping_lines: BaseShippingLine[];
 };
 
 type BaseOrdersApiResponse = {
-  orders: BaseOrder[];
-  total_count: number;
+  orders: BaseOrderSummary[];
 };
 
 // ============================================================================
 // お届け先ヘルパー関数（DEST-01準拠）
 //
 // 【フォールバック発動条件（DEST-01 §5）】
-//   order_receiver が null、または全フィールドが空の場合に発動する。
+//   order_receiver が null、または必須フィールドが空の場合に発動する。
 //   フォールバックは注文単位で発動する。フィールド単位の混在は禁止（DEST-01 §4）。
 // ============================================================================
 
@@ -261,24 +293,25 @@ async function refreshBaseToken(): Promise<string> {
 }
 
 // ============================================================================
-// 本実装経路: BASE API から注文を取得する
+// BASE API 注文取得
 // ============================================================================
 
-export async function fetchOrderedOrders(): Promise<BaseOrder[]> {
-  // ORDER-01 §3: dispatch_status: ordered で全注文を取得する
-  // 配送方法フィルタは BASE API に存在しないため、取得後にアプリ側でカテゴリ判定を行う（ORDER-01準拠）
-
+/**
+ * 未出荷注文の一覧（サマリー）を取得する。
+ * dispatch_status: ordered の注文のみ返す。
+ * order_items / order_receiver / shipping_lines は含まれない。
+ * 詳細が必要な場合は fetchOrderDetail(unique_key) を呼ぶこと。
+ */
+export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
   if (!process.env.BASE_API_TOKEN) {
     // !! 開発補助用モックにフォールバック（本番経路ではない。下部コメント参照）
-    return getMockOrders();
+    return getMockOrderSummaries();
   }
 
   const token = await getBaseToken();
   const url = `${BASE_API_BASE_URL}/orders?dispatch_status=ordered&limit=100`;
   const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
 
@@ -291,117 +324,171 @@ export async function fetchOrderedOrders(): Promise<BaseOrder[]> {
   return data.orders;
 }
 
+/**
+ * unique_key を使って注文詳細を1件取得する。
+ * order_items / order_receiver / shipping_lines を含む完全な BaseOrder を返す。
+ * 取得失敗時はエラーをスロー（呼び出し側でキャッチすること）。
+ */
+export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
+  if (!process.env.BASE_API_TOKEN) {
+    return getMockOrderDetail(uniqueKey);
+  }
+
+  const token = await getBaseToken();
+  const url = `${BASE_API_BASE_URL}/orders/detail/${uniqueKey}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`BASE API detail error [${uniqueKey}]: ${res.status} ${body}`);
+  }
+
+  const data = await res.json() as { order: BaseOrder };
+  return data.order;
+}
+
 // ============================================================================
 // 開発補助用モックデータ
 //
 // 用途: BASE_API_TOKEN 未設定時（ローカル開発・CI環境）の動作確認専用
-// 注意: 本番相当の挙動ではない。以下の点でリアルデータと異なる可能性がある
-//   - shipping_lines の有無・構造（実機未確認）
-//   - order_item_id の採番形式（実機未確認）
-//   - BASE API のページネーション・フィールド追加・省略の可能性
-// BASE_API_TOKEN が設定されると、この関数は呼び出されない。
+// 注意: 本番相当の挙動ではない。BASE_API_TOKEN が設定されると呼び出されない。
 // ============================================================================
 
-function getMockOrders(): BaseOrder[] {
+function getMockOrderSummaries(): BaseOrderSummary[] {
   return [
     {
-      order_id: 1001,
-      ordered_at: "2026-04-24T10:00:00+09:00",
-      dispatch_status: "ordered",
-      shipping_method: "宅配便",
-      shipping_lines: [{ method: "宅配便", fee: 770 }],
-      shipping_fee: 770,
-      total_price: 5500,
-      remark: "",
-      last_name: "山田", first_name: "太郎",
+      unique_key: "MOCK-1001", ordered: 1745497200, cancelled: null, dispatched: null,
+      payment: "creditcard", first_name: "太郎", last_name: "山田",
+      total: 5500, delivery_date: null, delivery_time_zone: null,
+      terminated: false, dispatch_status: "ordered", modified: 1745497200,
+    },
+    {
+      unique_key: "MOCK-1002", ordered: 1745500800, cancelled: null, dispatched: null,
+      payment: "creditcard", first_name: "花子", last_name: "鈴木",
+      total: 1100, delivery_date: null, delivery_time_zone: null,
+      terminated: false, dispatch_status: "ordered", modified: 1745500800,
+    },
+    {
+      unique_key: "MOCK-1003", ordered: 1745504400, cancelled: null, dispatched: null,
+      payment: "creditcard", first_name: "次郎", last_name: "佐藤",
+      total: 3300, delivery_date: null, delivery_time_zone: null,
+      terminated: false, dispatch_status: "ordered", modified: 1745504400,
+    },
+    {
+      unique_key: "MOCK-1004", ordered: 1745508000, cancelled: null, dispatched: null,
+      payment: "creditcard", first_name: "三郎", last_name: "田中",
+      total: 2200, delivery_date: null, delivery_time_zone: null,
+      terminated: false, dispatch_status: "ordered", modified: 1745508000,
+    },
+  ];
+}
+
+function getMockOrderDetail(uniqueKey: string): BaseOrder {
+  const mockDetails: Record<string, BaseOrder> = {
+    "MOCK-1001": {
+      unique_key: "MOCK-1001", ordered: 1745497200, cancelled: null, dispatched: null,
+      dispatch_status: "ordered", payment: "creditcard",
+      shipping_method: null, shipping_fee: 770,
+      total: 5500, first_name: "太郎", last_name: "山田",
       zip_code: "150-0001", prefecture: "東京都",
       address: "渋谷区神南1-1-1", address2: "", tel: "0312345678",
+      remark: "", modified: 1745497200, terminated: false,
       order_receiver: {
-        last_name: "山田", first_name: "太郎",
-        zip_code: "150-0001", prefecture: "東京都",
-        address: "渋谷区神南1-1-1", address2: "",
+        last_name: "山田", first_name: "太郎", zip_code: "150-0001",
+        prefecture: "東京都", address: "渋谷区神南1-1-1", address2: "",
         tel: "0312345678", country: "Japan", country_code: "JP",
       },
       order_items: [
         {
-          order_item_id: 10011, item_id: 201,
-          item_title: "テストTシャツ M", barcode: "4901234567890",
-          quantity: 2, price: 2365, status: "ordered",
+          order_item_id: 10011, item_id: 201, variation_id: 0,
+          title: "テストTシャツ M", barcode: "4901234567890",
+          variation: "", variation_identifier: "",
+          amount: 2, price: 2365, status: "ordered",
         },
       ],
+      shipping_lines: [
+        { order_item_ids: ["10011"], shipping_method: "宅配便", shipping_fee: 770 },
+      ],
     },
-    {
-      order_id: 1002,
-      ordered_at: "2026-04-24T11:00:00+09:00",
-      dispatch_status: "ordered",
-      shipping_method: "ネコポス",
-      shipping_lines: [{ method: "ネコポス", fee: 0 }],
-      shipping_fee: 0,
-      total_price: 1100,
-      remark: "急ぎでお願いします",
-      last_name: "鈴木", first_name: "花子",
+    "MOCK-1002": {
+      unique_key: "MOCK-1002", ordered: 1745500800, cancelled: null, dispatched: null,
+      dispatch_status: "ordered", payment: "creditcard",
+      shipping_method: null, shipping_fee: 0,
+      total: 1100, first_name: "花子", last_name: "鈴木",
       zip_code: "530-0001", prefecture: "大阪府",
       address: "北区梅田1-1-1", address2: "", tel: "0612345678",
+      remark: "急ぎでお願いします", modified: 1745500800, terminated: false,
       order_receiver: {
-        last_name: "鈴木", first_name: "花子",
-        zip_code: "530-0001", prefecture: "大阪府",
-        address: "北区梅田1-1-1", address2: "",
+        last_name: "鈴木", first_name: "花子", zip_code: "530-0001",
+        prefecture: "大阪府", address: "北区梅田1-1-1", address2: "",
         tel: "0612345678", country: "Japan", country_code: "JP",
       },
       order_items: [
         {
-          order_item_id: 10021, item_id: 202,
-          item_title: "テストステッカー", barcode: "4909999999991",
-          quantity: 1, price: 1100, status: "ordered",
+          order_item_id: 10021, item_id: 202, variation_id: 0,
+          title: "テストステッカー", barcode: "4909999999991",
+          variation: "", variation_identifier: "",
+          amount: 1, price: 1100, status: "ordered",
         },
       ],
+      shipping_lines: [
+        { order_item_ids: ["10021"], shipping_method: "ネコポス", shipping_fee: 0 },
+      ],
     },
-    {
-      order_id: 1003,
-      ordered_at: "2026-04-24T12:00:00+09:00",
-      dispatch_status: "ordered",
-      shipping_method: "配送対象外商品",
-      shipping_lines: [{ method: "配送対象外商品", fee: 0 }],
-      shipping_fee: 0,
-      total_price: 3300,
-      remark: "",
-      last_name: "佐藤", first_name: "次郎",
+    "MOCK-1003": {
+      unique_key: "MOCK-1003", ordered: 1745504400, cancelled: null, dispatched: null,
+      dispatch_status: "ordered", payment: "creditcard",
+      shipping_method: null, shipping_fee: 0,
+      total: 3300, first_name: "次郎", last_name: "佐藤",
       zip_code: "060-0001", prefecture: "北海道",
       address: "札幌市中央区北1条西1-1", address2: "", tel: "0112345678",
-      order_receiver: null,  // お届け先＝購入者と同一のケース（フォールバック動作確認用）
+      remark: "", modified: 1745504400, terminated: false,
+      order_receiver: null, // フォールバック動作確認用
       order_items: [
         {
-          order_item_id: 10031, item_id: 203,
-          item_title: "配送対象外テスト商品", barcode: "4908888888881",
-          quantity: 1, price: 3300, status: "ordered",
+          order_item_id: 10031, item_id: 203, variation_id: 0,
+          title: "配送対象外テスト商品", barcode: "4908888888881",
+          variation: "", variation_identifier: "",
+          amount: 1, price: 3300, status: "ordered",
         },
       ],
+      shipping_lines: [
+        { order_item_ids: ["10031"], shipping_method: "配送対象外商品", shipping_fee: 0 },
+      ],
     },
-    {
-      order_id: 1004,
-      ordered_at: "2026-04-24T13:00:00+09:00",
-      dispatch_status: "ordered",
-      shipping_method: "未登録の配送方法XYZ",
-      shipping_lines: [{ method: "未登録の配送方法XYZ", fee: 500 }],
-      shipping_fee: 500,
-      total_price: 2200,
-      remark: "",
-      last_name: "田中", first_name: "三郎",
+    "MOCK-1004": {
+      unique_key: "MOCK-1004", ordered: 1745508000, cancelled: null, dispatched: null,
+      dispatch_status: "ordered", payment: "creditcard",
+      shipping_method: null, shipping_fee: 500,
+      total: 2200, first_name: "三郎", last_name: "田中",
       zip_code: "460-0001", prefecture: "愛知県",
       address: "名古屋市中区三の丸1-1-1", address2: "", tel: "0522345678",
+      remark: "", modified: 1745508000, terminated: false,
       order_receiver: {
-        last_name: "田中", first_name: "三郎",
-        zip_code: "460-0001", prefecture: "愛知県",
-        address: "名古屋市中区三の丸1-1-1", address2: "",
+        last_name: "田中", first_name: "三郎", zip_code: "460-0001",
+        prefecture: "愛知県", address: "名古屋市中区三の丸1-1-1", address2: "",
         tel: "0522345678", country: "Japan", country_code: "JP",
       },
       order_items: [
         {
-          order_item_id: 10041, item_id: 204,
-          item_title: "不明配送テスト商品", barcode: "4907777777771",
-          quantity: 1, price: 2200, status: "ordered",
+          order_item_id: 10041, item_id: 204, variation_id: 0,
+          title: "不明配送テスト商品", barcode: "4907777777771",
+          variation: "", variation_identifier: "",
+          amount: 1, price: 2200, status: "ordered",
         },
       ],
+      shipping_lines: [
+        { order_item_ids: ["10041"], shipping_method: "未登録の配送方法XYZ", shipping_fee: 500 },
+      ],
     },
-  ];
+  };
+
+  const detail = mockDetails[uniqueKey];
+  if (!detail) {
+    throw new Error(`Mock order detail not found: ${uniqueKey}`);
+  }
+  return detail;
 }
