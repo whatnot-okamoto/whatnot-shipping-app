@@ -112,7 +112,7 @@ export const DEFAULT_SHIPPING_METHOD_MAPPING: ShippingMethodMappingEntry[] = [
  * @param mapping         マッピングテーブル（通常は Upstash 取得値 + DEFAULT のマージ）
  */
 export function classifyShippingMethod(
-  shippingMethod: string,
+  shippingMethod: string | null,
   shippingLines: BaseShippingLine[],
   mapping: ShippingMethodMappingEntry[]
 ): ClassificationResult {
@@ -153,7 +153,7 @@ export function classifyShippingMethod(
  * 空文字・重複を除去して返す。
  */
 function extractMethodNames(
-  shippingMethod: string,
+  shippingMethod: string | null,
   shippingLines: BaseShippingLine[]
 ): string[] {
   const seen = new Set<string>();
@@ -161,7 +161,7 @@ function extractMethodNames(
 
   const candidates = [
     shippingMethod,
-    ...shippingLines.map((l) => l.method),
+    ...shippingLines.map((l) => l.shipping_method),
   ];
 
   for (const name of candidates) {

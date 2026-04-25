@@ -1,11 +1,10 @@
 // U1・U2・U4 Upstash 初期化（DATA-01 準拠）
 //
 // 【U3はこのファイルの対象外】
-//   U3（セッション単位）はセッションロック側の責務。Step 5 で実装する。
+//   U3（セッション単位）はセッションロック側の責務。
 //
 // 【キーを跨ぐ更新の整合（DATA-01 §5）】
 //   U1・U2・U4・インデックスキーの全書き込みを pipeline で 1 回の HTTP リクエストに集約する。
-//   一部のみ書き込んだ状態で処理が終了することを防ぐ構造にする。
 
 import { redis } from "@/lib/upstash";
 import type { BaseOrder } from "@/lib/base-api";
@@ -22,10 +21,11 @@ import {
 // ============================================================================
 
 /**
- * U1: `order:{order_id}` に保存するデータ。
+ * U1: `order:{unique_key}` に保存するデータ。
  * 注文基本情報・商品明細・配送方法は BASE API から都度取得するため保存しない（DATA-01 U1）。
  */
 export type U1Data = {
+  unique_key: string;
   hold_flag: boolean;
   hold_reason: string;
   carrier: Carrier | "";  // "" = 未選択（non-delivery・unknown・スタッフ未選択）
@@ -41,9 +41,10 @@ export type U1Data = {
  * tracking_number は入力確定時更新（確定時更新ルール DATA-01 §3）。初期値は ""。
  */
 export type U2Data = {
-  order_ids: number[];
+  bundle_group_id: string;
+  order_unique_keys: string[];
   bundle_enabled: boolean;
-  representative_order_id: number;
+  representative_order_unique_key: string;
   tracking_number: string;
 };
 
@@ -53,10 +54,11 @@ export type U2Data = {
  * 残数・ピッキング完了状態は派生値のため保存しない（DATA-01 §2 禁止事項）。
  */
 export type U4Data = {
-  order_id: number;
+  order_item_id: number;
+  order_unique_key: string;
   jan_code: string;
-  required_quantity: number;
-  scanned_quantity: number;  // 初期値 0。確認ダイアログ完了時のみ更新（DATA-01 §3）
+  required_quantity: number;  // source: item.amount
+  scanned_quantity: number;   // 初期値 0。確認ダイアログ完了時のみ更新（DATA-01 §3）
 };
 
 // ============================================================================
@@ -69,7 +71,7 @@ export type InitializeResult = {
   u4Count: number;
   // 未登録配送方法を持つ注文の一覧（ORDER-01 §5 UIアラート用。Step 6 以降で使用）
   unknownMethodOrders: Array<{
-    order_id: number;
+    unique_key: string;
     detectedMethodNames: string[];
   }>;
 };
@@ -81,6 +83,8 @@ export type InitializeResult = {
  *   1. 同梱グループを生成（U2 の単位を決定）
  *   2. pipeline に U2・U1・U4・インデックスキーの全書き込みコマンドを積む
  *   3. pipeline.exec() で一括送信（整合性担保）
+ *
+ * shipping_lines.length !== 1 の注文は category="unknown" として扱う。
  */
 export async function initializeOrderData(
   orders: BaseOrder[]
@@ -91,57 +95,74 @@ export async function initializeOrderData(
 
   for (const [bundleGroupId, bundleOrders] of bundles) {
     // --- U2 ---
-    const orderIds = bundleOrders.map((o) => o.order_id).sort((a, b) => a - b);
+    const orderUniqueKeys = bundleOrders
+      .map((o) => o.unique_key)
+      .sort();
     const u2: U2Data = {
-      order_ids: orderIds,
+      bundle_group_id: bundleGroupId,
+      order_unique_keys: orderUniqueKeys,
       bundle_enabled: true,
-      representative_order_id: orderIds[0],   // 昇順最小が代表注文（DATA-01 U2）
+      representative_order_unique_key: orderUniqueKeys[0],  // 辞書順最小が代表（DATA-01 U2）
       tracking_number: "",
     };
     pipe.set(`bundle:${bundleGroupId}`, JSON.stringify(u2), { nx: true });
 
     for (const order of bundleOrders) {
-      // 配送方法カテゴリ判定（ORDER-01 §2・§3）
-      const classification = classifyShippingMethod(
-        order.shipping_method,
-        order.shipping_lines,
-        DEFAULT_SHIPPING_METHOD_MAPPING
-      );
+      // shipping_lines.length === 1 のときのみ分類。0 または >1 は unknown 扱い。
+      let category: CarrierCategory = "unknown";
+      let detectedMethodNames: string[] = [];
+      let isUnknown = true;
 
-      if (classification.isUnknown) {
+      if (order.shipping_lines.length === 1) {
+        const classification = classifyShippingMethod(
+          order.shipping_lines[0].shipping_method,
+          order.shipping_lines,
+          DEFAULT_SHIPPING_METHOD_MAPPING
+        );
+        category = classification.category;
+        detectedMethodNames = classification.detectedMethodNames;
+        isUnknown = classification.isUnknown;
+      } else {
+        // 0件または複数件: 方法名を収集してスタッフに確認させる
+        detectedMethodNames = order.shipping_lines.map((l) => l.shipping_method);
+      }
+
+      if (isUnknown) {
         unknownMethodOrders.push({
-          order_id: order.order_id,
-          detectedMethodNames: classification.detectedMethodNames,
+          unique_key: order.unique_key,
+          detectedMethodNames,
         });
       }
 
       // --- U1 ---
       const u1: U1Data = {
+        unique_key: order.unique_key,
         hold_flag: false,
         hold_reason: "",
-        carrier: resolveInitialCarrier(classification.category),
+        carrier: resolveInitialCarrier(category),
         receipt_required: false,
         receipt_name: "",
         receipt_note: "",
         app_memo: "",
         cancelled_flag: false,
       };
-      pipe.set(`order:${order.order_id}`, JSON.stringify(u1), { nx: true });
+      pipe.set(`order:${order.unique_key}`, JSON.stringify(u1), { nx: true });
 
       // --- U4 + インデックスキー ---
       const itemIds: number[] = [];
       for (const item of order.order_items) {
         const u4: U4Data = {
-          order_id: order.order_id,
+          order_item_id: item.order_item_id,
+          order_unique_key: order.unique_key,
           jan_code: item.barcode,
-          required_quantity: item.quantity,
+          required_quantity: item.amount,
           scanned_quantity: 0,
         };
         pipe.set(`picking:${item.order_item_id}`, JSON.stringify(u4), { nx: true });
         itemIds.push(item.order_item_id);
       }
-      // index:picking:{order_id}: 注文単位で U4 を引くためのインデックス（DATA-01 §5）
-      pipe.set(`index:picking:${order.order_id}`, JSON.stringify(itemIds), { nx: true });
+      // index:picking:{unique_key}: 注文単位で U4 を引くためのインデックス（DATA-01 §5）
+      pipe.set(`index:picking:${order.unique_key}`, JSON.stringify(itemIds), { nx: true });
     }
   }
 
@@ -164,8 +185,7 @@ export async function initializeOrderData(
  * carrier の初期候補値を決定する。
  * スタッフの最終選択（DATA-01 U1 carrier フィールド）ではなく、U1 保存時の初期値。
  *
- * delivery     → "sagawa"（宅配系デフォルト。マッピングテーブル先頭候補として採用）
- *                ヤマトの可能性もあるが、スタッフが必ず S2 工程で確認・変更する
+ * delivery     → "sagawa"（宅配系デフォルト。スタッフが S2 工程で確認・変更する）
  * nekopos      → "nekopos"（カテゴリから一意に確定）
  * non-delivery → ""（出荷対象外。carrier 選択不可）
  * unknown      → ""（マッピング未登録。スタッフが手動選択する）
@@ -177,7 +197,6 @@ function resolveInitialCarrier(category: CarrierCategory): Carrier | "" {
     case "non-delivery": return "";
     case "unknown":      return "";
     default: {
-      // TypeScript の網羅性チェック用（CarrierCategory に新値が追加された際にコンパイルエラーになる）
       const _exhaustive: never = category;
       return _exhaustive;
     }
@@ -199,7 +218,8 @@ function groupOrdersIntoU2Bundles(
   const tempGroups = new Map<string, BaseOrder[]>();
 
   for (const order of orders) {
-    const date = order.ordered_at.slice(0, 10); // YYYY-MM-DD（同日判定）
+    // ordered は Unix 秒（ORDER-FIELD-01）
+    const date = new Date(order.ordered * 1000).toISOString().slice(0, 10);
     const customerKey = [
       getReceiverName(order),
       getReceiverAddress(order),
@@ -232,23 +252,23 @@ function parseRedisValue<T>(raw: unknown): T | null {
 }
 
 /** U1: 1件取得 */
-export async function getOrderState(orderId: string): Promise<U1Data | null> {
-  const raw = await redis.get(`order:${orderId}`);
+export async function getOrderState(uniqueKey: string): Promise<U1Data | null> {
+  const raw = await redis.get(`order:${uniqueKey}`);
   return parseRedisValue<U1Data>(raw);
 }
 
-/** U1: 複数件取得。存在しない order_id はMapから除外される */
+/** U1: 複数件取得。存在しない unique_key はMapから除外される */
 export async function getOrderStates(
-  orderIds: string[]
+  uniqueKeys: string[]
 ): Promise<Map<string, U1Data>> {
-  if (orderIds.length === 0) return new Map();
+  if (uniqueKeys.length === 0) return new Map();
   const pipe = redis.pipeline();
-  for (const id of orderIds) pipe.get(`order:${id}`);
+  for (const key of uniqueKeys) pipe.get(`order:${key}`);
   const results = await pipe.exec();
   const map = new Map<string, U1Data>();
-  orderIds.forEach((id, i) => {
+  uniqueKeys.forEach((key, i) => {
     const parsed = parseRedisValue<U1Data>(results[i]);
-    if (parsed) map.set(id, parsed);
+    if (parsed) map.set(key, parsed);
   });
   return map;
 }
@@ -279,10 +299,10 @@ export async function getBundleStates(
 
 /**
  * U4: 注文に紐づくピッキング進捗一覧を取得。
- * index:picking:{order_id} → item_id リスト → 各 picking:{item_id} の順で参照する。
+ * index:picking:{unique_key} → item_id リスト → 各 picking:{item_id} の順で参照する。
  */
-export async function getPickingProgress(orderId: string): Promise<U4Data[]> {
-  const rawIndex = await redis.get(`index:picking:${orderId}`);
+export async function getPickingProgress(uniqueKey: string): Promise<U4Data[]> {
+  const rawIndex = await redis.get(`index:picking:${uniqueKey}`);
   const itemIds = parseRedisValue<number[]>(rawIndex);
   if (!itemIds || itemIds.length === 0) return [];
 
