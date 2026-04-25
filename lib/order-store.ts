@@ -9,6 +9,7 @@
 
 import { redis } from "@/lib/upstash";
 import type { BaseOrder } from "@/lib/base-api";
+import { getReceiverFullName, getReceiverAddress } from "@/lib/base-api";
 import {
   classifyShippingMethod,
   DEFAULT_SHIPPING_METHOD_MAPPING,
@@ -202,9 +203,8 @@ function groupOrdersIntoU2Bundles(
   for (const order of orders) {
     const date = order.ordered_at.slice(0, 10); // YYYY-MM-DD（同日判定）
     const customerKey = [
-      order.receiver_name,
-      order.receiver_prefecture,
-      order.receiver_address,
+      getReceiverFullName(order),
+      getReceiverAddress(order),
     ].join("::");
     const groupKey = `${date}::${customerKey}`;
 
