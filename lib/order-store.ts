@@ -9,7 +9,7 @@
 
 import { redis } from "@/lib/upstash";
 import type { BaseOrder } from "@/lib/base-api";
-import { getReceiverFullName, getReceiverAddress } from "@/lib/base-api";
+import { getReceiverName, getReceiverAddress } from "@/lib/base-api";
 import {
   classifyShippingMethod,
   DEFAULT_SHIPPING_METHOD_MAPPING,
@@ -98,7 +98,7 @@ export async function initializeOrderData(
       representative_order_id: orderIds[0],   // 昇順最小が代表注文（DATA-01 U2）
       tracking_number: "",
     };
-    pipe.set(`bundle:${bundleGroupId}`, JSON.stringify(u2));
+    pipe.set(`bundle:${bundleGroupId}`, JSON.stringify(u2), { nx: true });
 
     for (const order of bundleOrders) {
       // 配送方法カテゴリ判定（ORDER-01 §2・§3）
@@ -126,7 +126,7 @@ export async function initializeOrderData(
         app_memo: "",
         cancelled_flag: false,
       };
-      pipe.set(`order:${order.order_id}`, JSON.stringify(u1));
+      pipe.set(`order:${order.order_id}`, JSON.stringify(u1), { nx: true });
 
       // --- U4 + インデックスキー ---
       const itemIds: number[] = [];
@@ -137,11 +137,11 @@ export async function initializeOrderData(
           required_quantity: item.quantity,
           scanned_quantity: 0,
         };
-        pipe.set(`picking:${item.order_item_id}`, JSON.stringify(u4));
+        pipe.set(`picking:${item.order_item_id}`, JSON.stringify(u4), { nx: true });
         itemIds.push(item.order_item_id);
       }
       // index:picking:{order_id}: 注文単位で U4 を引くためのインデックス（DATA-01 §5）
-      pipe.set(`index:picking:${order.order_id}`, JSON.stringify(itemIds));
+      pipe.set(`index:picking:${order.order_id}`, JSON.stringify(itemIds), { nx: true });
     }
   }
 
@@ -188,9 +188,7 @@ function resolveInitialCarrier(category: CarrierCategory): Carrier | "" {
  * 注文一覧を同梱グループ（U2 の単位）に分類する。
  *
  * グルーピング条件: 同日注文 かつ 同一顧客
- * 「同一顧客」の判定キー: receiver_name + receiver_prefecture + receiver_address
- * ※ 正式定義は DEST-01 A/D 案の実機確認後に確定する（実装参照文書 §11）。
- *   order_receiver フィールドの存在確認結果により、ここの判定キーを更新すること。
+ * 「同一顧客」の判定キー: getReceiverName（氏名）+ getReceiverAddress（住所+番地）
  *
  * 全注文に U2 を付与する（単独注文も「1件のみの U2」として扱う）（DATA-01 U2）。
  * bundle_group_id は UUID で生成する。
@@ -203,7 +201,7 @@ function groupOrdersIntoU2Bundles(
   for (const order of orders) {
     const date = order.ordered_at.slice(0, 10); // YYYY-MM-DD（同日判定）
     const customerKey = [
-      getReceiverFullName(order),
+      getReceiverName(order),
       getReceiverAddress(order),
     ].join("::");
     const groupKey = `${date}::${customerKey}`;
@@ -221,4 +219,92 @@ function groupOrdersIntoU2Bundles(
   }
 
   return bundles;
+}
+
+// ============================================================================
+// 読み取り関数
+// ============================================================================
+
+function parseRedisValue<T>(raw: unknown): T | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return JSON.parse(raw) as T;
+  return raw as T;
+}
+
+/** U1: 1件取得 */
+export async function getOrderState(orderId: string): Promise<U1Data | null> {
+  const raw = await redis.get(`order:${orderId}`);
+  return parseRedisValue<U1Data>(raw);
+}
+
+/** U1: 複数件取得。存在しない order_id はMapから除外される */
+export async function getOrderStates(
+  orderIds: string[]
+): Promise<Map<string, U1Data>> {
+  if (orderIds.length === 0) return new Map();
+  const pipe = redis.pipeline();
+  for (const id of orderIds) pipe.get(`order:${id}`);
+  const results = await pipe.exec();
+  const map = new Map<string, U1Data>();
+  orderIds.forEach((id, i) => {
+    const parsed = parseRedisValue<U1Data>(results[i]);
+    if (parsed) map.set(id, parsed);
+  });
+  return map;
+}
+
+/** U2: 1件取得 */
+export async function getBundleState(
+  bundleGroupId: string
+): Promise<U2Data | null> {
+  const raw = await redis.get(`bundle:${bundleGroupId}`);
+  return parseRedisValue<U2Data>(raw);
+}
+
+/** U2: 複数件取得。存在しない bundle_group_id はMapから除外される */
+export async function getBundleStates(
+  bundleGroupIds: string[]
+): Promise<Map<string, U2Data>> {
+  if (bundleGroupIds.length === 0) return new Map();
+  const pipe = redis.pipeline();
+  for (const id of bundleGroupIds) pipe.get(`bundle:${id}`);
+  const results = await pipe.exec();
+  const map = new Map<string, U2Data>();
+  bundleGroupIds.forEach((id, i) => {
+    const parsed = parseRedisValue<U2Data>(results[i]);
+    if (parsed) map.set(id, parsed);
+  });
+  return map;
+}
+
+/**
+ * U4: 注文に紐づくピッキング進捗一覧を取得。
+ * index:picking:{order_id} → item_id リスト → 各 picking:{item_id} の順で参照する。
+ */
+export async function getPickingProgress(orderId: string): Promise<U4Data[]> {
+  const rawIndex = await redis.get(`index:picking:${orderId}`);
+  const itemIds = parseRedisValue<number[]>(rawIndex);
+  if (!itemIds || itemIds.length === 0) return [];
+
+  const pipe = redis.pipeline();
+  for (const itemId of itemIds) pipe.get(`picking:${itemId}`);
+  const results = await pipe.exec();
+
+  return results
+    .map((r) => parseRedisValue<U4Data>(r))
+    .filter((d): d is U4Data => d !== null);
+}
+
+/**
+ * ピッキング完了状態を派生計算する（Upstash非参照・純粋関数）。
+ * この値をUpstashのキーとして保存することは禁止（DATA-01 §2 禁止事項）。
+ */
+export function derivePickingStatus(
+  pickingItems: U4Data[]
+): "completed" | "in_progress" | "not_started" {
+  if (pickingItems.length === 0) return "not_started";
+  if (pickingItems.every((item) => item.scanned_quantity === 0)) return "not_started";
+  if (pickingItems.every((item) => item.scanned_quantity >= item.required_quantity))
+    return "completed";
+  return "in_progress";
 }
