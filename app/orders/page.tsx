@@ -26,26 +26,6 @@ type ApiResponse = {
   error?: string;
 };
 
-// ORDER-SNAPSHOT-01 準拠：APIレスポンス順を基本とする
-// 以下の先頭グループ注文が既に先頭に来ているか念のため補助ソートを適用する
-// 先頭グループ: needs_initialization / has_multiple_shipping_lines /
-//              has_unknown_shipping_method / hold_flag
-// ※ selectable=false 全体を先頭にする独自ソートは行わない
-function sortOrders(orders: Order[]): Order[] {
-  const isTopGroup = (o: Order) =>
-    o.needs_initialization ||
-    o.has_multiple_shipping_lines ||
-    o.has_unknown_shipping_method ||
-    o.hold_flag;
-
-  return [...orders].sort((a, b) => {
-    const aTop = isTopGroup(a);
-    const bTop = isTopGroup(b);
-    if (aTop !== bTop) return aTop ? -1 : 1;
-    if (a.order_date !== b.order_date) return a.order_date < b.order_date ? -1 : 1;
-    return a.unique_key < b.unique_key ? -1 : 1;
-  });
-}
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -74,7 +54,7 @@ export default function OrdersPage() {
           setFetchError(data.error ?? "注文一覧の取得に失敗しました");
           return;
         }
-        setOrders(sortOrders(data.orders));
+        setOrders(data.orders);
         setSession(data.session);
         setMeta(data.meta);
       })

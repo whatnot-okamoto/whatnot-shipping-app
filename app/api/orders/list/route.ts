@@ -1,5 +1,5 @@
 // GET /api/orders/list
-// index:orders を起点に U1 / snapshot / U2 / U3 / U4派生値を合成して返す。
+// index:orders × BASE現在未対応一覧の積集合を起点に U1 / snapshot / U2 / U3 / U4派生値を合成して返す。
 // 読み取り専用。BASE詳細APIは叩かない。自動initは行わない。
 
 import { redis } from "@/lib/upstash";
@@ -14,6 +14,7 @@ import {
   type U2Data,
 } from "@/lib/order-store";
 import { getCurrentSession } from "@/lib/session-store";
+import { fetchOrderedOrders } from "@/lib/base-api";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -42,39 +43,61 @@ const FALLBACK_SNAPSHOT: Omit<OrderSnapshot, "unique_key"> = {
   items_summary: "",
 };
 
-// Upstash Redis に直接アクセスするため @/lib/upstash をインポート
 export async function GET() {
   try {
-    // 手順1: index:orders から unique_key 一覧を取得
-    const uniqueKeys: string[] = await redis.smembers("index:orders");
+    // ステップ1: BASE一覧APIで現在の未対応注文 unique_key 一覧を取得
+    // 失敗時は index:orders のみで継続しない
+    let baseOpenUniqueKeys: Set<string>;
+    let baseOpenOrderCount: number;
+    try {
+      const baseOrders = await fetchOrderedOrders();
+      baseOpenUniqueKeys = new Set(baseOrders.map((o) => o.unique_key));
+      baseOpenOrderCount = baseOrders.length;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      return Response.json(
+        { success: false, status: "base_api_error", error: `BASE APIの取得に失敗しました: ${message}` },
+        { status: 502 }
+      );
+    }
 
-    // 手順2: セッション情報（U3）を取得
+    // index:orders から unique_key 一覧を取得
+    const indexUniqueKeys: string[] = await redis.smembers("index:orders");
+    const indexOrderCount = indexUniqueKeys.length;
+
+    // ステップ2: 表示対象 = index:orders ∩ BASE現在未対応unique_key一覧（集合演算）
+    const filteredUniqueKeys = indexUniqueKeys.filter((uk) => baseOpenUniqueKeys.has(uk));
+
+    // stale_index_count: index:orders に存在するが BASE未対応一覧にない unique_key の件数
+    const staleIndexCount = indexUniqueKeys.filter((uk) => !baseOpenUniqueKeys.has(uk)).length;
+
+    // セッション情報（U3）を取得
     const session = await getCurrentSession();
 
-    // 手順3: U1 と snapshot を並列取得
+    // U1 と snapshot を並列取得
     const [u1Map, snapshotMap] = await Promise.all([
-      getOrderStates(uniqueKeys),
-      getOrderSnapshots(uniqueKeys),
+      getOrderStates(filteredUniqueKeys),
+      getOrderSnapshots(filteredUniqueKeys),
     ]);
 
-    // 手順4: snapshot から bundle_group_id を収集し U2 を一括取得
+    // snapshot から bundle_group_id を収集し U2 を一括取得
     const bundleGroupIds = new Set<string>();
     for (const snap of snapshotMap.values()) {
       if (snap.bundle_group_id) bundleGroupIds.add(snap.bundle_group_id);
     }
     const bundleMap: Map<string, U2Data> = await getBundleStates([...bundleGroupIds]);
 
-    // 手順5: ピッキング進捗を並列取得して picking_status を派生計算
+    // ピッキング進捗を並列取得して picking_status を派生計算
     const pickingEntries = await Promise.all(
-      uniqueKeys.map(async (uk) => {
+      filteredUniqueKeys.map(async (uk) => {
         const items = await getPickingProgress(uk);
         return [uk, derivePickingStatus(items)] as const;
       })
     );
     const pickingStatusMap = new Map(pickingEntries);
 
-    // 手順6: 各注文のフィールドを合成し selectable / disabled_reason を決定
-    const orders = uniqueKeys.map((uk) => {
+    // 各注文のフィールドを合成し selectable / disabled_reason を決定
+    const orders = filteredUniqueKeys.map((uk) => {
       const u1 = u1Map.get(uk);
       const snap = snapshotMap.get(uk);
       const needs_initialization = !u1 || !snap;
@@ -138,14 +161,18 @@ export async function GET() {
       };
     });
 
-    // 手順7: ソート（非selectable先頭 → order_date昇順 → unique_key昇順）
+    // ソート: 先頭グループ先頭 → order_date 降順（新しい順）→ unique_key 昇順
+    const isTopGroup = (o: (typeof orders)[0]) =>
+      o.needs_initialization ||
+      o.has_multiple_shipping_lines ||
+      o.has_unknown_shipping_method ||
+      o.hold_flag;
+
     orders.sort((a, b) => {
-      if (a.selectable_for_session !== b.selectable_for_session) {
-        return a.selectable_for_session ? 1 : -1;
-      }
-      if (a.order_date !== b.order_date) {
-        return a.order_date < b.order_date ? -1 : 1;
-      }
+      const aTop = isTopGroup(a);
+      const bTop = isTopGroup(b);
+      if (aTop !== bTop) return aTop ? -1 : 1;
+      if (a.order_date !== b.order_date) return a.order_date > b.order_date ? -1 : 1;
       return a.unique_key < b.unique_key ? -1 : 1;
     });
 
@@ -173,6 +200,10 @@ export async function GET() {
         total_order_count: orders.length,
         uninitialized_count,
         unselectable_count,
+        base_open_order_count: baseOpenOrderCount,
+        index_order_count: indexOrderCount,
+        displayed_order_count: orders.length,
+        stale_index_count: staleIndexCount,
       },
     });
   } catch (error) {
