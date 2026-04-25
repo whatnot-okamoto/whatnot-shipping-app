@@ -90,6 +90,7 @@ export const DEFAULT_SHIPPING_METHOD_MAPPING: ShippingMethodMappingEntry[] = [
   // ネコポス系（例示。Upstash 登録値が優先）
   { methodName: "ネコポス", category: "nekopos" },
   { methodName: "クロネコゆうパケット", category: "nekopos" },
+  { methodName: "ネコポス・クロネコゆうパケット", category: "nekopos" },
   // 非配送（例示。Upstash 登録値が優先）
   { methodName: "配送対象外商品", category: "non-delivery" },
 ];

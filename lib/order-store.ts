@@ -6,9 +6,10 @@
 // 【キーを跨ぐ更新の整合（DATA-01 §5）】
 //   U1・U2・U4・インデックスキーの全書き込みを pipeline で 1 回の HTTP リクエストに集約する。
 
+import { createHash } from "crypto";
 import { redis } from "@/lib/upstash";
 import type { BaseOrder } from "@/lib/base-api";
-import { getReceiverName, getReceiverAddress } from "@/lib/base-api";
+import { getReceiverName, getReceiverAddress, getReceiverZipCode, getReceiverPrefecture } from "@/lib/base-api";
 import {
   classifyShippingMethod,
   DEFAULT_SHIPPING_METHOD_MAPPING,
@@ -204,38 +205,42 @@ function resolveInitialCarrier(category: CarrierCategory): Carrier | "" {
 }
 
 /**
+ * 同梱判定キー（注文日・氏名・郵便番号・都道府県・住所）から決定論的に bundle_group_id を生成する。
+ * 同じ判定キーからは常に同じ ID が生成されるため、init 再実行時に既存 U2 を NX で保護できる（BUNDLE-ID-01）。
+ * ID 形式: bg_{sha256(normalized_bundle_key).slice(0, 32)}
+ */
+function generateBundleGroupId(order: BaseOrder): string {
+  const date = new Date(order.ordered * 1000).toISOString().slice(0, 10);
+  const name = (getReceiverName(order) ?? "").trim();
+  const zip  = (getReceiverZipCode(order) ?? "").trim();
+  const pref = (getReceiverPrefecture(order) ?? "").trim();
+  const addr = (getReceiverAddress(order) ?? "").trim();
+
+  const key = [date, name, zip, pref, addr].join("::");
+  const hash = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return "bg_" + hash;
+}
+
+/**
  * 注文一覧を同梱グループ（U2 の単位）に分類する。
  *
  * グルーピング条件: 同日注文 かつ 同一顧客
- * 「同一顧客」の判定キー: getReceiverName（氏名）+ getReceiverAddress（住所+番地）
+ * 判定キー: 注文日 + 氏名 + 郵便番号 + 都道府県 + 住所（BUNDLE-ID-01 準拠）
  *
  * 全注文に U2 を付与する（単独注文も「1件のみの U2」として扱う）（DATA-01 U2）。
- * bundle_group_id は UUID で生成する。
+ * bundle_group_id は generateBundleGroupId() で決定論的に生成する（UUID 禁止・BUNDLE-ID-01）。
  */
 function groupOrdersIntoU2Bundles(
   orders: BaseOrder[]
 ): Map<string, BaseOrder[]> {
-  const tempGroups = new Map<string, BaseOrder[]>();
+  const bundles = new Map<string, BaseOrder[]>();
 
   for (const order of orders) {
-    // ordered は Unix 秒（ORDER-FIELD-01）
-    const date = new Date(order.ordered * 1000).toISOString().slice(0, 10);
-    const customerKey = [
-      getReceiverName(order),
-      getReceiverAddress(order),
-    ].join("::");
-    const groupKey = `${date}::${customerKey}`;
-
-    if (!tempGroups.has(groupKey)) {
-      tempGroups.set(groupKey, []);
+    const bundleGroupId = generateBundleGroupId(order);
+    if (!bundles.has(bundleGroupId)) {
+      bundles.set(bundleGroupId, []);
     }
-    tempGroups.get(groupKey)!.push(order);
-  }
-
-  // グルーピングキーを UUID の bundle_group_id に変換
-  const bundles = new Map<string, BaseOrder[]>();
-  for (const [, groupOrders] of tempGroups) {
-    bundles.set(crypto.randomUUID(), groupOrders);
+    bundles.get(bundleGroupId)!.push(order);
   }
 
   return bundles;
