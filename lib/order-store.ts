@@ -22,6 +22,27 @@ import {
 // ============================================================================
 
 /**
+ * ORDER-SNAPSHOT-01: `order_snapshot:{unique_key}` に保存するデータ。
+ * BASE詳細APIから生成した表示用スナップショット。スタッフ操作値は含まない。
+ * shipping_lines複数件時はhas_multiple_shipping_lines=trueで保存し、
+ * shipping_method_name/shipping_fee/shipping_categoryは空にする（C-5未確認）。
+ */
+export type OrderSnapshot = {
+  unique_key: string;
+  bundle_group_id: string;
+  receiver_name: string;
+  order_date: string;          // YYYY-MM-DD
+  shipping_method_name: string;
+  shipping_fee: number;
+  shipping_lines_count: number;
+  has_multiple_shipping_lines: boolean;
+  shipping_category: string;   // CarrierCategory or ""
+  remark: string;
+  item_count: number;
+  items_summary: string;
+};
+
+/**
  * U1: `order:{unique_key}` に保存するデータ。
  * 注文基本情報・商品明細・配送方法は BASE API から都度取得するため保存しない（DATA-01 U1）。
  */
@@ -70,7 +91,9 @@ export type InitializeResult = {
   u1Count: number;
   u2Count: number;
   u4Count: number;
-  // 未登録配送方法を持つ注文の一覧（ORDER-01 §5 UIアラート用。Step 6 以降で使用）
+  snapshotCount: number;
+  indexOrdersAdded: number;    // sadd で新規追加された unique_key の件数
+  indexOrdersFailed: boolean;  // sadd が例外をスローした場合 true
   unknownMethodOrders: Array<{
     unique_key: string;
     detectedMethodNames: string[];
@@ -135,6 +158,10 @@ export async function initializeOrderData(
         });
       }
 
+      // --- Snapshot（ORDER-SNAPSHOT-01）---
+      const snapshot = buildOrderSnapshot(order, bundleGroupId, category);
+      pipe.set(`order_snapshot:${order.unique_key}`, JSON.stringify(snapshot), { nx: true });
+
       // --- U1 ---
       const u1: U1Data = {
         unique_key: order.unique_key,
@@ -167,13 +194,31 @@ export async function initializeOrderData(
     }
   }
 
-  // U1・U2・U4・インデックスキーを一括送信（整合ルール DATA-01 §5）
+  // U1・U2・U4・snapshot・インデックスキーを一括送信（整合ルール DATA-01 §5）
   await pipe.exec();
+
+  // index:orders への unique_key 登録（Set形式。pipeline 外で実行し失敗を明示的に捕捉する）
+  const allUniqueKeys = orders.map((o) => o.unique_key);
+  let indexOrdersAdded = 0;
+  let indexOrdersFailed = false;
+  if (allUniqueKeys.length > 0) {
+    try {
+      indexOrdersAdded = await redis.sadd(
+        "index:orders",
+        ...(allUniqueKeys as [string, ...string[]])
+      );
+    } catch {
+      indexOrdersFailed = true;
+    }
+  }
 
   return {
     u1Count: orders.length,
     u2Count: bundles.size,
     u4Count: orders.reduce((sum, o) => sum + o.order_items.length, 0),
+    snapshotCount: orders.length,
+    indexOrdersAdded,
+    indexOrdersFailed,
     unknownMethodOrders,
   };
 }
@@ -181,6 +226,56 @@ export async function initializeOrderData(
 // ============================================================================
 // 内部ヘルパー
 // ============================================================================
+
+/**
+ * 注文詳細からスナップショットを生成する（ORDER-SNAPSHOT-01準拠）。
+ * shipping_lines複数件時はC-5未確認のため shipping_method_name等を空にする。
+ */
+function buildOrderSnapshot(
+  order: BaseOrder,
+  bundleGroupId: string,
+  category: CarrierCategory
+): OrderSnapshot {
+  const linesCount = order.shipping_lines.length;
+  let shippingMethodName = "";
+  let shippingFee = 0;
+  let shippingCategory = "";
+  let hasMultiple = false;
+
+  if (linesCount === 1) {
+    shippingMethodName = order.shipping_lines[0].shipping_method;
+    shippingFee = order.shipping_lines[0].shipping_fee;
+    shippingCategory = category;
+  } else if (linesCount > 1) {
+    hasMultiple = true;
+    // shipping_method_name / shipping_fee / shipping_category は空（C-5未確認）
+  }
+  // linesCount === 0: すべてデフォルト値（空文字・0）
+
+  let itemsSummary: string;
+  if (order.order_items.length === 0) {
+    itemsSummary = "商品情報なし";
+  } else if (order.order_items.length === 1) {
+    itemsSummary = order.order_items[0].title;
+  } else {
+    itemsSummary = `${order.order_items[0].title} 他${order.order_items.length - 1}点`;
+  }
+
+  return {
+    unique_key: order.unique_key,
+    bundle_group_id: bundleGroupId,
+    receiver_name: getReceiverName(order),
+    order_date: new Date(order.ordered * 1000).toISOString().slice(0, 10),
+    shipping_method_name: shippingMethodName,
+    shipping_fee: shippingFee,
+    shipping_lines_count: linesCount,
+    has_multiple_shipping_lines: hasMultiple,
+    shipping_category: shippingCategory,
+    remark: order.remark,
+    item_count: order.order_items.length,
+    items_summary: itemsSummary,
+  };
+}
 
 /**
  * carrier の初期候補値を決定する。
@@ -332,4 +427,26 @@ export function derivePickingStatus(
   if (pickingItems.every((item) => item.scanned_quantity >= item.required_quantity))
     return "completed";
   return "in_progress";
+}
+
+/** Snapshot: 1件取得（ORDER-SNAPSHOT-01） */
+export async function getOrderSnapshot(uniqueKey: string): Promise<OrderSnapshot | null> {
+  const raw = await redis.get(`order_snapshot:${uniqueKey}`);
+  return parseRedisValue<OrderSnapshot>(raw);
+}
+
+/** Snapshot: 複数件取得。存在しない unique_key はMapから除外される */
+export async function getOrderSnapshots(
+  uniqueKeys: string[]
+): Promise<Map<string, OrderSnapshot>> {
+  if (uniqueKeys.length === 0) return new Map();
+  const pipe = redis.pipeline();
+  for (const key of uniqueKeys) pipe.get(`order_snapshot:${key}`);
+  const results = await pipe.exec();
+  const map = new Map<string, OrderSnapshot>();
+  uniqueKeys.forEach((key, i) => {
+    const parsed = parseRedisValue<OrderSnapshot>(results[i]);
+    if (parsed) map.set(key, parsed);
+  });
+  return map;
 }

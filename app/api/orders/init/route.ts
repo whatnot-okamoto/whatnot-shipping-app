@@ -51,9 +51,15 @@ export async function POST() {
       );
     }
 
-    const skipped = summaries.length - details.length;
+    // index:orders sadd 失敗を warnings に追記（/api/orders/list の表示に影響するため明示）
+    if (result.indexOrdersFailed) {
+      warnings.push("index:orders への sadd が失敗しました。/api/orders/list に注文が表示されない可能性があります。");
+    }
 
-    if (failedUniqueKeys.length === 0) {
+    const skipped = summaries.length - details.length;
+    const hasIndexFailure = result.indexOrdersFailed;
+
+    if (failedUniqueKeys.length === 0 && !hasIndexFailure) {
       return Response.json({
         success: true,
         status: "completed",
@@ -64,6 +70,8 @@ export async function POST() {
         u1Count: result.u1Count,
         u2Count: result.u2Count,
         u4Count: result.u4Count,
+        snapshotCount: result.snapshotCount,
+        indexOrdersAdded: result.indexOrdersAdded,
       });
     }
 
@@ -74,10 +82,14 @@ export async function POST() {
       skipped,
       failed_unique_keys: failedUniqueKeys,
       warnings,
-      error: `${failedUniqueKeys.length} 件の詳細取得に失敗しました`,
+      error: hasIndexFailure
+        ? "index:orders への登録に失敗しました"
+        : `${failedUniqueKeys.length} 件の詳細取得に失敗しました`,
       u1Count: result.u1Count,
       u2Count: result.u2Count,
       u4Count: result.u4Count,
+      snapshotCount: result.snapshotCount,
+      indexOrdersAdded: result.indexOrdersAdded,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
