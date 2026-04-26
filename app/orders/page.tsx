@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import OrderCard, { type Order } from "./components/OrderCard";
 import SessionStatusBar from "./components/SessionStatusBar";
 
@@ -26,7 +26,6 @@ type ApiResponse = {
   error?: string;
 };
 
-
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [session, setSession] = useState<SessionInfo>({
@@ -46,21 +45,23 @@ export default function OrdersPage() {
   // Step 4-B の session/start 連携に備えて選択済み unique_key を管理する
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
+  const fetchOrders = useCallback(async () => {
+    const res = await fetch("/api/orders/list");
+    const data = await res.json() as ApiResponse;
+    if (!data.success) {
+      setFetchError(data.error ?? "注文一覧の取得に失敗しました");
+      return;
+    }
+    setOrders(data.orders);
+    setSession(data.session);
+    setMeta(data.meta);
+  }, []);
+
   useEffect(() => {
-    fetch("/api/orders/list")
-      .then((res) => res.json() as Promise<ApiResponse>)
-      .then((data) => {
-        if (!data.success) {
-          setFetchError(data.error ?? "注文一覧の取得に失敗しました");
-          return;
-        }
-        setOrders(data.orders);
-        setSession(data.session);
-        setMeta(data.meta);
-      })
+    fetchOrders()
       .catch(() => setFetchError("ネットワークエラーが発生しました"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [fetchOrders]);
 
   const handleCheck = (uniqueKey: string, checked: boolean) => {
     setSelectedKeys((prev) => {
@@ -132,6 +133,7 @@ export default function OrdersPage() {
                 order={order}
                 checked={selectedKeys.has(order.unique_key)}
                 onCheck={handleCheck}
+                onRefresh={fetchOrders}
               />
             ))}
           </div>

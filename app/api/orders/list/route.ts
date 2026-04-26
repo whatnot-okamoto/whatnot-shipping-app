@@ -155,6 +155,8 @@ export async function GET() {
         hold_flag: safeU1.hold_flag,
         hold_reason: safeU1.hold_reason,
         receipt_required: safeU1.receipt_required,
+        receipt_name: safeU1.receipt_name,
+        receipt_note: safeU1.receipt_note,
         app_memo: safeU1.app_memo,
         cancelled_flag: safeU1.cancelled_flag,
         bundle_group_id: safeSnap.bundle_group_id,
