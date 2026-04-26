@@ -48,11 +48,20 @@ export async function GET() {
     // ステップ1: BASE一覧APIで現在の未対応注文 unique_key 一覧を取得
     // 失敗時は index:orders のみで継続しない
     let baseOpenUniqueKeys: Set<string>;
+    let baseRawOrderCount: number;
     let baseOpenOrderCount: number;
     try {
       const baseOrders = await fetchOrderedOrders();
-      baseOpenUniqueKeys = new Set(baseOrders.map((o) => o.unique_key));
-      baseOpenOrderCount = baseOrders.length;
+      baseRawOrderCount = baseOrders.length;
+
+      const baseOpenOrders = baseOrders.filter(
+        (o) =>
+          o.dispatch_status === "ordered" &&
+          o.dispatched === null &&
+          o.terminated === false
+      );
+      baseOpenUniqueKeys = new Set(baseOpenOrders.map((o) => o.unique_key));
+      baseOpenOrderCount = baseOpenOrders.length;
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unknown error";
       return Response.json(
@@ -200,6 +209,7 @@ export async function GET() {
         total_order_count: orders.length,
         uninitialized_count,
         unselectable_count,
+        base_raw_order_count: baseRawOrderCount,
         base_open_order_count: baseOpenOrderCount,
         index_order_count: indexOrderCount,
         displayed_order_count: orders.length,
