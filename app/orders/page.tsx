@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import OrderCard, { type Order } from "./components/OrderCard";
 import SessionStatusBar from "./components/SessionStatusBar";
+import DiffConfirmModal, { type DiffResult } from "./components/DiffConfirmModal";
 
 type SessionInfo = {
   session_status: "none" | "active" | "unlocked" | "completed";
@@ -26,6 +27,12 @@ type ApiResponse = {
   error?: string;
 };
 
+type RefetchApiResponse = {
+  success: boolean;
+  diff_result?: DiffResult;
+  error?: string;
+};
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [session, setSession] = useState<SessionInfo>({
@@ -42,8 +49,11 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Step 4-B の session/start 連携に備えて選択済み unique_key を管理する
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+
+  // 再取得関連
+  const [isRefetching, setIsRefetching] = useState(false);
+  const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
 
   const fetchOrders = useCallback(async () => {
     const res = await fetch("/api/orders/list");
@@ -71,6 +81,33 @@ export default function OrdersPage() {
       return next;
     });
   };
+
+  /** 再取得ボタン押下 */
+  const handleRefetch = async () => {
+    setIsRefetching(true);
+    try {
+      const res = await fetch("/api/orders/refetch", { method: "POST" });
+      const data = await res.json() as RefetchApiResponse;
+      if (!data.success || !data.diff_result) {
+        setFetchError(data.error ?? "再取得に失敗しました");
+        return;
+      }
+      setDiffResult(data.diff_result);
+    } catch {
+      setFetchError("ネットワークエラーが発生しました");
+    } finally {
+      setIsRefetching(false);
+    }
+  };
+
+  /** 差分確認完了後：モーダルを閉じ、注文一覧を再取得 */
+  const handleDiffConfirmed = () => {
+    setDiffResult(null);
+    fetchOrders().catch(() => setFetchError("ネットワークエラーが発生しました"));
+  };
+
+  // 再取得ボタン表示条件（active中は非表示）
+  const showRefetchButton = session.session_status !== "active";
 
   if (loading) {
     return (
@@ -122,6 +159,19 @@ export default function OrdersPage() {
           {selectedKeys.size > 0 && (
             <span className="text-blue-700 font-medium">選択中：{selectedKeys.size} 件</span>
           )}
+
+          {/* 再取得ボタン */}
+          {showRefetchButton && (
+            <button
+              type="button"
+              disabled={isRefetching}
+              onClick={handleRefetch}
+              className="ml-auto text-sm px-3 py-1 rounded border border-blue-500 text-blue-600
+                         bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isRefetching ? "再取得中..." : "再取得する"}
+            </button>
+          )}
         </div>
 
         {/* 注文カード一覧 */}
@@ -141,6 +191,14 @@ export default function OrdersPage() {
           <p className="text-center text-gray-500 py-16 text-sm">表示できる注文がありません</p>
         )}
       </div>
+
+      {/* 差分確認モーダル */}
+      {diffResult && (
+        <DiffConfirmModal
+          initialDiffResult={diffResult}
+          onConfirmed={handleDiffConfirmed}
+        />
+      )}
     </div>
   );
 }

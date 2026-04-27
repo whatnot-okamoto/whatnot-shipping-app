@@ -4,6 +4,7 @@
 // Body: { bundle_group_ids: string[] }
 
 import { startSession } from "@/lib/session-store";
+import { getRefetchState } from "@/lib/refetch-store";
 
 export async function POST(request: Request) {
   let body: unknown;
@@ -27,6 +28,20 @@ export async function POST(request: Request) {
   }
 
   const { bundle_group_ids } = body as { bundle_group_ids: string[] };
+
+  // サーバー側検証：再取得・差分確認が完了していない場合はセッション開始を拒否
+  const refetchState = await getRefetchState();
+  if (
+    !refetchState ||
+    refetchState.refetch_done_flag !== true ||
+    refetchState.diff_confirmed_flag !== true ||
+    refetchState.has_new_uninitialized === true
+  ) {
+    return Response.json(
+      { error: "REFETCH_REQUIRED: 再取得・差分確認を完了してからセッションを開始してください" },
+      { status: 409 }
+    );
+  }
 
   try {
     const session = await startSession(bundle_group_ids);

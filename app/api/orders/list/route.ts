@@ -15,6 +15,7 @@ import {
 } from "@/lib/order-store";
 import { getCurrentSession } from "@/lib/session-store";
 import { fetchOrderedOrders } from "@/lib/base-api";
+import { getRefetchState } from "@/lib/refetch-store";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -190,6 +191,19 @@ export async function GET() {
     const uninitialized_count = orders.filter((o) => o.needs_initialization).length;
     const unselectable_count = orders.filter((o) => !o.selectable_for_session).length;
 
+    // session_status=active: U3のフラグを使用
+    // それ以外: orders:refetch_stateのフラグを使用（セッションなし・完了・緊急解除後）
+    let refetchDoneFlag = false;
+    let diffConfirmedFlag = false;
+    if (session?.session_status === "active") {
+      refetchDoneFlag = session.refetch_done_flag;
+      diffConfirmedFlag = session.diff_confirmed_flag;
+    } else {
+      const refetchState = await getRefetchState();
+      refetchDoneFlag = refetchState?.refetch_done_flag ?? false;
+      diffConfirmedFlag = refetchState?.diff_confirmed_flag ?? false;
+    }
+
     return Response.json({
       success: true,
       status: "ok",
@@ -197,14 +211,14 @@ export async function GET() {
         ? {
             session_status: session.session_status,
             locked_bundle_group_ids: session.locked_bundle_group_ids,
-            refetch_done_flag: session.refetch_done_flag,
-            diff_confirmed_flag: session.diff_confirmed_flag,
+            refetch_done_flag: refetchDoneFlag,
+            diff_confirmed_flag: diffConfirmedFlag,
           }
         : {
             session_status: "none",
             locked_bundle_group_ids: [],
-            refetch_done_flag: false,
-            diff_confirmed_flag: false,
+            refetch_done_flag: refetchDoneFlag,
+            diff_confirmed_flag: diffConfirmedFlag,
           },
       orders,
       meta: {

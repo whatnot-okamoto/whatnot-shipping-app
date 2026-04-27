@@ -9,6 +9,7 @@
 //   未設定 = activeなセッションなし（DATA-01 §5 session:currentポインタ構造）
 
 import { redis } from "@/lib/upstash";
+import { getRefetchState, deleteRefetchState } from "@/lib/refetch-store";
 
 // ============================================================================
 // 型定義
@@ -58,30 +59,36 @@ export type U3Data = {
 export async function startSession(
   lockedBundleGroupIds: string[]
 ): Promise<U3Data> {
+  // T5：orders:refetch_stateのフラグをU3へコピーする
+  const refetchState = await getRefetchState();
+  const refetchDoneFlag = refetchState?.refetch_done_flag ?? false;
+  const diffConfirmedFlag = refetchState?.diff_confirmed_flag ?? false;
+
   const sessionId = crypto.randomUUID();
 
-  // Step 2: locked_bundle_group_ids と session_status=active を含む完成データを一括書き込む
+  // locked_bundle_group_ids・session_status=active・引き継ぎフラグを含む完成データを一括書き込む
   // session:current より先に書くことで、ポインタが先行するケースを排除する
   const sessionData: U3Data = {
     session_id: sessionId,
     session_status: "active",
     locked_bundle_group_ids: lockedBundleGroupIds,
-    refetch_done_flag: false,
-    diff_confirmed_flag: false,
+    refetch_done_flag: refetchDoneFlag,
+    diff_confirmed_flag: diffConfirmedFlag,
     checklist_printed_flag: false,
     emergency_unlock_log: [],
   };
   await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
 
-  // Step 3: session:current に NX で書き込む（二重生成防止）
-  // "OK" が返れば成功。null が返れば既存セッションありで競合（DATA-01 §5 衝突防止方針）
+  // session:current に NX で書き込む（二重生成防止）
   const setResult = await redis.set("session:current", sessionId, { nx: true });
 
   if (setResult === null) {
-    // 競合: session:{session_id} を削除して中途半端な状態を残さない
     await redis.del(`session:${sessionId}`);
     throw new Error("SESSION_CONFLICT: An active session already exists");
   }
+
+  // session_status=active 確定後に orders:refetch_state を削除（T5完了）
+  await deleteRefetchState();
 
   return sessionData;
 }

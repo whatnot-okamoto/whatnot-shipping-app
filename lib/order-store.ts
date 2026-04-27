@@ -450,3 +450,84 @@ export async function getOrderSnapshots(
   });
   return map;
 }
+
+// ============================================================================
+// Snapshot生成ヘルパー（refetch用）
+// ============================================================================
+
+/**
+ * 注文詳細とbundle_group_idからスナップショットを生成する（refetch用）。
+ * shipping_lines分類・buildOrderSnapshot相当の処理を一括で行う。
+ * bundle_group_idは既存snapshotから取得して渡すこと（再計算しない）。
+ */
+export function buildOrderSnapshotFromDetail(
+  order: BaseOrder,
+  bundleGroupId: string
+): OrderSnapshot {
+  let category: CarrierCategory = "unknown";
+  if (order.shipping_lines.length === 1) {
+    const result = classifyShippingMethod(
+      order.shipping_lines[0].shipping_method,
+      order.shipping_lines,
+      DEFAULT_SHIPPING_METHOD_MAPPING
+    );
+    category = result.category;
+  }
+  return buildOrderSnapshot(order, bundleGroupId, category);
+}
+
+// ============================================================================
+// Pending Snapshot（order_snapshot_pending）管理（Step 4-A3）
+// index:order_snapshot_pending Set でKEYS命令なしに全件管理する
+// ============================================================================
+
+const PENDING_INDEX_KEY = "index:order_snapshot_pending";
+
+/** pending Snapshot: 1件取得 */
+export async function getOrderSnapshotPending(
+  uniqueKey: string
+): Promise<OrderSnapshot | null> {
+  const raw = await redis.get(`order_snapshot_pending:${uniqueKey}`);
+  return parseRedisValue<OrderSnapshot>(raw);
+}
+
+/** pending Snapshot: 1件保存。同時に index:order_snapshot_pending に SADD する */
+export async function setOrderSnapshotPending(
+  uniqueKey: string,
+  snapshot: OrderSnapshot
+): Promise<void> {
+  const pipe = redis.pipeline();
+  pipe.set(`order_snapshot_pending:${uniqueKey}`, JSON.stringify(snapshot));
+  pipe.sadd(PENDING_INDEX_KEY, uniqueKey);
+  await pipe.exec();
+}
+
+/** pending Snapshot: 1件削除。同時に index:order_snapshot_pending から SREM する */
+export async function deleteOrderSnapshotPending(
+  uniqueKey: string
+): Promise<void> {
+  const pipe = redis.pipeline();
+  pipe.del(`order_snapshot_pending:${uniqueKey}`);
+  pipe.srem(PENDING_INDEX_KEY, uniqueKey);
+  await pipe.exec();
+}
+
+/** index:order_snapshot_pending のメンバー全件を返す（KEYS命令不使用） */
+export async function getAllPendingUniqueKeys(): Promise<string[]> {
+  return redis.smembers(PENDING_INDEX_KEY);
+}
+
+/** pending Snapshot を全件削除し、index:order_snapshot_pending も削除する */
+export async function deleteAllOrderSnapshotPending(): Promise<void> {
+  const keys = await getAllPendingUniqueKeys();
+  if (keys.length === 0) {
+    await redis.del(PENDING_INDEX_KEY);
+    return;
+  }
+  const pipe = redis.pipeline();
+  for (const key of keys) {
+    pipe.del(`order_snapshot_pending:${key}`);
+  }
+  pipe.del(PENDING_INDEX_KEY);
+  await pipe.exec();
+}
