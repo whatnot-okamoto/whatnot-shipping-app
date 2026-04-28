@@ -6,8 +6,12 @@
 // session:{session_id} は削除しない（emergency_unlock_log を監査証跡として永続保持）。
 
 import { getCurrentSession, emergencyUnlockSession } from "@/lib/session-store";
+import { requireAuth } from "@/lib/auth";
 
 export async function POST(request: Request) {
+  const authError = await requireAuth(request);
+  if (authError) return authError;
+
   let body: unknown;
   try {
     body = await request.json();

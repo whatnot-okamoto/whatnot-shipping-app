@@ -5,8 +5,12 @@
 // 出荷完了注文の U1・U2・U4 削除は Step 8 で実装するため対象外。
 
 import { getCurrentSession, endSession } from "@/lib/session-store";
+import { requireAuth } from "@/lib/auth";
 
-export async function POST() {
+export async function POST(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     const session = await getCurrentSession();
     if (!session) {

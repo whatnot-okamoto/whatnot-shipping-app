@@ -7,8 +7,12 @@
 import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
 import { initializeOrderData } from "@/lib/order-store";
 import type { BaseOrder } from "@/lib/base-api";
+import { requireAuth } from "@/lib/auth";
 
-export async function POST() {
+export async function POST(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     // 手順1: 注文一覧取得（サマリのみ）
     const summaries = await fetchOrderedOrders();

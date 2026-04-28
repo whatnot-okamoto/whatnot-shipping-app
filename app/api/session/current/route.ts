@@ -6,8 +6,12 @@
 // （DATA-01 §5 session:currentポインタ構造）
 
 import { getCurrentSession } from "@/lib/session-store";
+import { requireAuth } from "@/lib/auth";
 
-export async function GET() {
+export async function GET(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     const session = await getCurrentSession();
     return Response.json({ session });

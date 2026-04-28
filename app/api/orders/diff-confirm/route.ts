@@ -11,6 +11,7 @@ import {
   type OrderSnapshot,
 } from "@/lib/order-store";
 import { getRefetchState, setRefetchState } from "@/lib/refetch-store";
+import { requireAuth } from "@/lib/auth";
 
 /** 5フィールドを比較して差分があるか判定する（refetch側と同じ基準） */
 function hasDiff(existing: OrderSnapshot, pending: OrderSnapshot): boolean {
@@ -23,7 +24,10 @@ function hasDiff(existing: OrderSnapshot, pending: OrderSnapshot): boolean {
   );
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     // 手順1: refetch_state確認
     const refetchState = await getRefetchState();

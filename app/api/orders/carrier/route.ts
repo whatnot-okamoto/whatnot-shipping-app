@@ -5,10 +5,14 @@ import { NextRequest } from "next/server";
 import { redis } from "@/lib/upstash";
 import type { U1Data } from "@/lib/order-store";
 import type { Carrier } from "@/lib/carrier-mapping";
+import { requireAuth } from "@/lib/auth";
 
 const ALLOWED_CARRIERS = new Set<string>(["sagawa", "yamato", "nekopos"]);
 
 export async function PATCH(req: NextRequest) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     const body = await req.json() as { unique_key?: unknown; carrier?: unknown };
 

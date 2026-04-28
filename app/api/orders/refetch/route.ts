@@ -12,6 +12,7 @@ import {
   type OrderSnapshot,
 } from "@/lib/order-store";
 import { resetRefetchState, setRefetchState } from "@/lib/refetch-store";
+import { requireAuth } from "@/lib/auth";
 
 export type DiffItem = {
   unique_key: string;
@@ -60,7 +61,10 @@ function comparePendingToSnapshot(
   };
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     // 手順1: refetch_stateを初期化
     await resetRefetchState();

@@ -5,8 +5,12 @@
 
 import { startSession } from "@/lib/session-store";
 import { getRefetchState } from "@/lib/refetch-store";
+import { requireAuth } from "@/lib/auth";
 
 export async function POST(request: Request) {
+  const authError = await requireAuth(request);
+  if (authError) return authError;
+
   let body: unknown;
   try {
     body = await request.json();

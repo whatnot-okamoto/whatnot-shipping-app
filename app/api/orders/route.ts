@@ -3,8 +3,12 @@
 // BASE_API_TOKEN 未設定時はモックデータを返す
 
 import { fetchOrderedOrders } from "@/lib/base-api";
+import { requireAuth } from "@/lib/auth";
 
-export async function GET() {
+export async function GET(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     const orders = await fetchOrderedOrders();
     return Response.json({ orders, count: orders.length });

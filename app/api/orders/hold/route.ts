@@ -6,8 +6,12 @@ import { NextRequest } from "next/server";
 import { redis } from "@/lib/upstash";
 import type { U1Data } from "@/lib/order-store";
 import type { U3Data } from "@/lib/session-store";
+import { requireAuth } from "@/lib/auth";
 
 export async function PATCH(req: NextRequest) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     const body = await req.json() as {
       unique_key?: unknown;

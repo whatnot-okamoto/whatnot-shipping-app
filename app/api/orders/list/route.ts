@@ -16,6 +16,7 @@ import {
 import { getCurrentSession } from "@/lib/session-store";
 import { fetchOrderedOrders } from "@/lib/base-api";
 import { getRefetchState } from "@/lib/refetch-store";
+import { requireAuth } from "@/lib/auth";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -44,7 +45,10 @@ const FALLBACK_SNAPSHOT: Omit<OrderSnapshot, "unique_key"> = {
   items_summary: "",
 };
 
-export async function GET() {
+export async function GET(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+
   try {
     // ステップ1: BASE一覧APIで現在の未対応注文 unique_key 一覧を取得
     // 失敗時は index:orders のみで継続しない
