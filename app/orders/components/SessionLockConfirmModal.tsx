@@ -16,6 +16,7 @@ type Props = {
   /** 「戻る」押下時のコールバック。ダイアログを閉じ、状態変更なし */
   onClose: () => void;
   isConfirming: boolean;
+  lockConditionReasons: string[];
 };
 
 const CARRIER_LABELS: Record<string, string> = {
@@ -30,6 +31,7 @@ export default function SessionLockConfirmModal({
   onConfirm,
   onClose,
   isConfirming,
+  lockConditionReasons,
 }: Props) {
   const selectedKeySet = new Set(selectedOrders.map((o) => o.unique_key));
 
@@ -103,8 +105,11 @@ export default function SessionLockConfirmModal({
           {/* 「出荷準備を開始する」: 押下完了時点がロック発動タイミング（CONFIRM-01 補強レイヤー読替え） */}
           <button
             type="button"
-            onClick={onConfirm}
-            disabled={isConfirming}
+            onClick={() => {
+              if (lockConditionReasons.length > 0) return;
+              onConfirm();
+            }}
+            disabled={isConfirming || lockConditionReasons.length > 0}
             className="px-4 py-2 text-sm rounded bg-blue-600 text-white font-medium
                        hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >

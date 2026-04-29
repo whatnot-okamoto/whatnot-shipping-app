@@ -111,6 +111,7 @@ export default function OrdersPage() {
   const [lockedBundles, setLockedBundles] = useState<LockedBundleInfo[]>([]);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isStartingSession, setIsStartingSession] = useState(false);
+  const [carrierErrorKeys, setCarrierErrorKeys] = useState<Set<string>>(new Set());
 
   const isLockedStage = session.session_status === "active";
 
@@ -162,6 +163,18 @@ export default function OrdersPage() {
       .finally(() => setLoading(false));
   }, [loadPage]);
 
+  const handleCarrierError = (uniqueKey: string, hasError: boolean) => {
+    setCarrierErrorKeys((prev) => {
+      const next = new Set(prev);
+      if (hasError) {
+        next.add(uniqueKey);
+      } else {
+        next.delete(uniqueKey);
+      }
+      return next;
+    });
+  };
+
   const handleCheck = (uniqueKey: string, checked: boolean) => {
     setSelectedKeys((prev) => {
       const next = new Set(prev);
@@ -207,16 +220,22 @@ export default function OrdersPage() {
     if (selectedKeys.size === 0) return reasons;
     if (!session.refetch_done_flag) reasons.push("再取得が未完了です");
     if (!session.diff_confirmed_flag) reasons.push("差分確認が未完了です");
-    if (expandedOrders.some((o) => !o.carrier)) {
+    const hasCarrierError = expandedOrders.some((o) => carrierErrorKeys.has(o.unique_key));
+    if (expandedOrders.some((o) => !o.carrier) || hasCarrierError) {
       reasons.push("ロック対象に配送業者が未選択の注文があります");
     }
     if (expandedOrders.some((o) => o.hold_flag)) {
       reasons.push("ロック対象に保留中の注文が含まれています");
     }
     return reasons;
-  }, [selectedKeys, session.refetch_done_flag, session.diff_confirmed_flag, expandedOrders]);
+  }, [selectedKeys, session.refetch_done_flag, session.diff_confirmed_flag, expandedOrders, carrierErrorKeys]);
 
   const canStartSession = selectedKeys.size > 0 && lockConditionReasons.length === 0;
+
+  const handleStartSession = () => {
+    if (lockConditionReasons.length > 0) return;
+    setShowConfirmModal(true);
+  };
 
   // 確認モーダル「出荷準備を開始する」押下時: T5を実行する（CONFIRM-01 #014）
   const handleConfirmStart = async () => {
@@ -323,6 +342,7 @@ export default function OrdersPage() {
                   checked={selectedKeys.has(order.unique_key)}
                   onCheck={handleCheck}
                   onRefresh={fetchOrdersList}
+                  onCarrierError={(hasError) => handleCarrierError(order.unique_key, hasError)}
                 />
               ))}
             </div>
@@ -349,7 +369,7 @@ export default function OrdersPage() {
               <button
                 type="button"
                 disabled={!canStartSession}
-                onClick={() => setShowConfirmModal(true)}
+                onClick={handleStartSession}
                 className="w-full py-2.5 text-sm font-medium rounded
                            bg-blue-600 text-white hover:bg-blue-700
                            disabled:opacity-40 disabled:cursor-not-allowed"
@@ -377,6 +397,7 @@ export default function OrdersPage() {
           onConfirm={handleConfirmStart}
           onClose={() => setShowConfirmModal(false)}
           isConfirming={isStartingSession}
+          lockConditionReasons={lockConditionReasons}
         />
       )}
     </div>

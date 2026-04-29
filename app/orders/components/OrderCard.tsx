@@ -38,9 +38,10 @@ type Props = {
   checked: boolean;
   onCheck: (uniqueKey: string, checked: boolean) => void;
   onRefresh: () => void;
+  onCarrierError: (hasError: boolean) => void;
 };
 
-export default function OrderCard({ order, checked, onCheck, onRefresh }: Props) {
+export default function OrderCard({ order, checked, onCheck, onRefresh, onCarrierError }: Props) {
   const bundleIdShort = order.bundle_group_id
     ? order.bundle_group_id.slice(0, 11) + "..."
     : "—";
@@ -49,12 +50,18 @@ export default function OrderCard({ order, checked, onCheck, onRefresh }: Props)
   const canEditU1 = !order.needs_initialization && !order.cancelled_flag;
 
   // ローカル状態（サーバーからの最新値と同期）
+  const [localCarrier, setLocalCarrier] = useState(order.carrier);
   const [localReceiptRequired, setLocalReceiptRequired] = useState(order.receipt_required);
   const [receiptName, setReceiptName] = useState(order.receipt_name);
   const [receiptNote, setReceiptNote] = useState(order.receipt_note);
   const [holdReason, setHoldReason] = useState(order.hold_reason);
   const [isSaving, setIsSaving] = useState(false);
   const [patchError, setPatchError] = useState<string | null>(null);
+
+  // order.carrier が更新されたら localCarrier をサーバー値に同期する
+  useEffect(() => {
+    setLocalCarrier(order.carrier);
+  }, [order.carrier]);
 
   // order が更新されたらローカル状態をサーバー値に同期する
   useEffect(() => {
@@ -93,8 +100,21 @@ export default function OrderCard({ order, checked, onCheck, onRefresh }: Props)
   };
 
   // 配送業者 onChange
-  const handleCarrierChange = (value: string) => {
-    withSave(() => patch("/api/orders/carrier", { unique_key: order.unique_key, carrier: value }));
+  const handleCarrierChange = async (value: string) => {
+    setLocalCarrier(value);
+    onCarrierError(true);
+    if (isSaving) return;
+    setIsSaving(true);
+    setPatchError(null);
+    try {
+      await patch("/api/orders/carrier", { unique_key: order.unique_key, carrier: value });
+      onRefresh();
+      onCarrierError(false);
+    } catch (e) {
+      setPatchError(e instanceof Error ? e.message : "更新に失敗しました");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // 領収書チェックボックス onChange
@@ -225,7 +245,7 @@ export default function OrderCard({ order, checked, onCheck, onRefresh }: Props)
           <div>
             <label className="text-xs text-gray-500 block mb-0.5">配送業者</label>
             <select
-              value={order.carrier}
+              value={localCarrier}
               disabled={!canEditU1 || isSaving}
               onChange={(e) => handleCarrierChange(e.target.value)}
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white
