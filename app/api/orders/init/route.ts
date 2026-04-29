@@ -79,6 +79,12 @@ export async function POST(req: Request) {
       });
     }
 
+    console.error("[orders/init] 初期化部分失敗:", {
+      failedUniqueKeys,
+      hasIndexFailure,
+      warnings,
+      result,
+    });
     return Response.json({
       success: false,
       status: "partial_failed",
@@ -86,19 +92,17 @@ export async function POST(req: Request) {
       skipped,
       failed_unique_keys: failedUniqueKeys,
       warnings,
-      error: hasIndexFailure
-        ? "index:orders への登録に失敗しました"
-        : `${failedUniqueKeys.length} 件の詳細取得に失敗しました`,
+      message: "初期化に失敗しました。時間をおいて再実行してください。",
       u1Count: result.u1Count,
       u2Count: result.u2Count,
       u4Count: result.u4Count,
       snapshotCount: result.snapshotCount,
       indexOrdersAdded: result.indexOrdersAdded,
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+  } catch (err) {
+    console.error("[orders/init] 予期しないエラー:", err);
     return Response.json(
-      { success: false, status: "failed", error: message },
+      { success: false, message: "初期化に失敗しました。時間をおいて再実行してください。" },
       { status: 500 }
     );
   }

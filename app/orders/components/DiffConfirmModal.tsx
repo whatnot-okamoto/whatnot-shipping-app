@@ -73,9 +73,20 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     try {
       // POST /api/orders/init
       const initRes = await fetch("/api/orders/init", { method: "POST" });
-      const initData = await initRes.json() as { success: boolean; error?: string };
-      if (!initData.success && initRes.status !== 200) {
-        setError(initData.error ?? "初期化に失敗しました");
+      let initData: { success: boolean; message?: string; error?: string } | null = null;
+      try {
+        initData = await initRes.json();
+      } catch {
+        setError("初期化に失敗しました。時間をおいて再実行してください。");
+        return;
+      }
+
+      if (!initRes.ok || !initData?.success) {
+        const message =
+          initData?.message ||
+          initData?.error ||
+          "初期化に失敗しました。時間をおいて再実行してください。";
+        setError(message);
         return;
       }
 
