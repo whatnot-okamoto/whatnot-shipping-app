@@ -37,6 +37,8 @@ export type U3Data = {
   checklist_printed_flag: boolean;
   /** 緊急解除ログ。永続保持・クリア禁止。追記のみ許可（DATA-01 T7）。 */
   emergency_unlock_log: EmergencyUnlockLogEntry[];
+  /** PDF一括出力完了フラグ。PDF生成成功時にtrueへ更新する（Step 4-C-2）。 */
+  pdf_output_done_flag?: boolean;
 };
 
 // ============================================================================
@@ -75,6 +77,7 @@ export async function startSession(
     refetch_done_flag: refetchDoneFlag,
     diff_confirmed_flag: diffConfirmedFlag,
     checklist_printed_flag: false,
+    pdf_output_done_flag: false,
     emergency_unlock_log: [],
   };
   await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
@@ -121,6 +124,7 @@ export async function endSession(sessionId: string): Promise<void> {
     refetch_done_flag: false,
     diff_confirmed_flag: false,
     checklist_printed_flag: false,
+    pdf_output_done_flag: false,
     // emergency_unlock_log はクリアしない（永続保持）
   };
 
@@ -173,6 +177,7 @@ export async function emergencyUnlockSession(
     refetch_done_flag: false,
     diff_confirmed_flag: false,
     checklist_printed_flag: false,
+    pdf_output_done_flag: false,
     // 既存ログに追記する。クリアは禁止（DATA-01 T7・§6 禁止事項）
     emergency_unlock_log: [...current.emergency_unlock_log, logEntry],
   };

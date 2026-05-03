@@ -1,9 +1,10 @@
 "use client";
 
-// ロック後ステージ最小UI（Step 4-B §10 UI-01準拠）
-// U2単位を主表示とする。S1への説明文のみ表示し、ボタン類は一切設置しない。
+// ロック後ステージ（Step 4-B §10 UI-01準拠・Step 4-C-2 PdfOutputSection組み込み）
+// U2単位を主表示とする。PDF出力セクション（S2）を追加。
 
 import LockedBundleGroupCard from "./LockedBundleGroupCard";
+import PdfOutputSection from "./PdfOutputSection";
 
 export type LockedBundleInfo = {
   bundle_group_id: string;
@@ -13,13 +14,21 @@ export type LockedBundleInfo = {
   receiver_name: string;
   hold_flag_anomaly: boolean;
   receipt_required: boolean;
+  /** receipt_required===true かつ receipt_name が空の場合 true（領収書宛名未入力警告用） */
+  receipt_name_empty: boolean;
 };
 
 type Props = {
   lockedBundles: LockedBundleInfo[];
+  pdfOutputDoneFlag: boolean;
+  onRefreshSession: () => Promise<void>;
 };
 
-export default function LockedStageView({ lockedBundles }: Props) {
+export default function LockedStageView({
+  lockedBundles,
+  pdfOutputDoneFlag,
+  onRefreshSession,
+}: Props) {
   return (
     <div className="max-w-3xl mx-auto px-4 py-4">
       {/* 概要行 */}
@@ -46,12 +55,12 @@ export default function LockedStageView({ lockedBundles }: Props) {
         ))}
       </div>
 
-      {/* S1への導線（説明文のみ。ボタン・非活性ボタン・プレースホルダーは一切設置しない） */}
-      <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg">
-        <p className="text-sm text-gray-500">
-          次のステップ：納品書・領収書PDF出力（Step 4-Cで実装）
-        </p>
-      </div>
+      {/* S2: PDF出力セクション（Step 4-C-2） */}
+      <PdfOutputSection
+        pdfOutputDoneFlag={pdfOutputDoneFlag}
+        lockedBundles={lockedBundles}
+        onSuccess={onRefreshSession}
+      />
     </div>
   );
 }

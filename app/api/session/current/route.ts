@@ -24,6 +24,8 @@ export type LockedBundleInfo = {
   hold_flag_anomaly: boolean;
   /** 配下U1のいずれかに receipt_required === true がある場合 true */
   receipt_required: boolean;
+  /** receipt_required===true かつ receipt_name が空の配下U1が存在する場合 true（領収書宛名未入力警告用） */
+  receipt_name_empty: boolean;
 };
 
 export async function GET(req: Request) {
@@ -87,6 +89,12 @@ export async function GET(req: Request) {
         // receipt_required: 配下U1 のいずれかに true があれば true
         const receiptRequired = orderIds.some((uk) => u1Map.get(uk)?.receipt_required === true);
 
+        // receipt_name_empty: receipt_required===true かつ receipt_name が空の U1 が存在すれば true
+        const receiptNameEmpty = orderIds.some((uk) => {
+          const u1 = u1Map.get(uk);
+          return u1?.receipt_required === true && !u1?.receipt_name;
+        });
+
         return {
           bundle_group_id: bgId,
           representative_order_id: repId,
@@ -95,6 +103,7 @@ export async function GET(req: Request) {
           receiver_name: receiverName,
           hold_flag_anomaly: holdFlagAnomaly,
           receipt_required: receiptRequired,
+          receipt_name_empty: receiptNameEmpty,
         };
       })
       .filter((b): b is LockedBundleInfo => b !== null);
