@@ -12,6 +12,7 @@ type SessionInfo = {
   locked_bundle_group_ids: string[];
   refetch_done_flag: boolean;
   diff_confirmed_flag: boolean;
+  pdf_output_done_flag?: boolean;
 };
 
 type Meta = {
@@ -44,6 +45,7 @@ type SessionCurrentApiResponse = {
     diff_confirmed_flag: boolean;
     checklist_printed_flag: boolean;
     emergency_unlock_log: unknown[];
+    pdf_output_done_flag?: boolean;
   } | null;
   locked_bundles?: LockedBundleInfo[];
   error?: string;
@@ -97,6 +99,7 @@ export default function OrdersPage() {
     locked_bundle_group_ids: [],
     refetch_done_flag: false,
     diff_confirmed_flag: false,
+    pdf_output_done_flag: false,
   });
   const [meta, setMeta] = useState<Meta>({
     total_order_count: 0,
@@ -142,6 +145,7 @@ export default function OrdersPage() {
         locked_bundle_group_ids: data.session.locked_bundle_group_ids,
         refetch_done_flag: data.session.refetch_done_flag,
         diff_confirmed_flag: data.session.diff_confirmed_flag,
+        pdf_output_done_flag: data.session.pdf_output_done_flag ?? false,
       });
       setLockedBundles(data.locked_bundles ?? []);
       return true;
@@ -302,7 +306,11 @@ export default function OrdersPage() {
 
       {isLockedStage ? (
         // ロック後ステージ（session_status === "active"）
-        <LockedStageView lockedBundles={lockedBundles} />
+        <LockedStageView
+          lockedBundles={lockedBundles}
+          pdfOutputDoneFlag={session.pdf_output_done_flag ?? false}
+          onRefreshSession={async () => { await fetchCurrentSession(); }}
+        />
       ) : (
         // ロック前ステージ（注文一覧・選択UI）
         <div className="max-w-3xl mx-auto px-4 py-4">
