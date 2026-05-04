@@ -69,8 +69,8 @@ export async function generateShippingDocumentsPdf(
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
-  const regularFont = await pdfDoc.embedFont(regularFontBytes);
-  const boldFont = await pdfDoc.embedFont(boldFontBytes);
+  const regularFont = await pdfDoc.embedFont(regularFontBytes, { subset: false });
+  const boldFont = await pdfDoc.embedFont(boldFontBytes, { subset: false });
 
   for (const { order, orderState } of inputs) {
     addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont);
