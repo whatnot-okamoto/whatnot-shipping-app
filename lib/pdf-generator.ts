@@ -54,11 +54,11 @@ export async function generateShippingDocumentsPdf(
 ): Promise<Uint8Array> {
   const regularFontPath = path.join(
     process.cwd(),
-    "public/fonts/NotoSansJP-Regular.otf"
+    "public/fonts/NotoSansJP-Regular.ttf"
   );
   const boldFontPath = path.join(
     process.cwd(),
-    "public/fonts/NotoSansJP-Bold.otf"
+    "public/fonts/NotoSansJP-Bold.ttf"
   );
 
   const [regularFontBytes, boldFontBytes] = await Promise.all([
