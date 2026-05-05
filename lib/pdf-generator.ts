@@ -351,10 +351,14 @@ function addDeliveryNotePage(
   const col4R = RIGHT_EDGE;
   const col3R = RIGHT_EDGE - CONTENT_WIDTH * 0.19;
   const col2R = col3R - CONTENT_WIDTH * 0.14;
-  const col1MaxW = col2R - MARGIN - 8;
+  const janColW = 58;           // 13桁JAN用（フォント7pt換算）
+  const janColX = MARGIN;
+  const titleColX = MARGIN + janColW + 4;
+  const col1MaxW = col2R - titleColX - 8;
 
   // ヘッダー行
-  text(page, "商品名", MARGIN, y, boldFont, 7);
+  text(page, "JAN", janColX, y, boldFont, 7);
+  text(page, "商品名", titleColX, y, boldFont, 7);
   textRight(page, "数量", col2R, y, boldFont, 7);
   textRight(page, "単価", col3R, y, boldFont, 7);
   textRight(page, "金額", col4R, y, boldFont, 7);
@@ -364,13 +368,13 @@ function addDeliveryNotePage(
 
   // 明細行
   for (const item of order.order_items) {
-    const rowTitle = item.variation
-      ? `${item.title} (${item.variation})`
-      : item.title;
+    if (item.barcode) {
+      text(page, item.barcode, janColX, y, regularFont, 7);
+    }
     text(
       page,
-      truncate(rowTitle, col1MaxW, regularFont, 7),
-      MARGIN,
+      truncate(item.title, col1MaxW, regularFont, 7),
+      titleColX,
       y,
       regularFont,
       7
@@ -378,7 +382,20 @@ function addDeliveryNotePage(
     textRight(page, `${item.amount}`, col2R, y, regularFont, 7);
     textRight(page, formatYen(item.price), col3R, y, regularFont, 7);
     textRight(page, formatYen(item.price * item.amount), col4R, y, regularFont, 7);
-    y -= 12;
+    if (item.variation) {
+      y -= 10;
+      text(
+        page,
+        truncate(item.variation, col1MaxW, regularFont, 6),
+        titleColX,
+        y,
+        regularFont,
+        6
+      );
+      y -= 12;
+    } else {
+      y -= 12;
+    }
   }
 
   y -= 4;
