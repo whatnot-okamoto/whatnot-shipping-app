@@ -5,6 +5,7 @@
 import { NextRequest } from "next/server";
 import { redis } from "@/lib/upstash";
 import type { U1Data } from "@/lib/order-store";
+import { applyPdfOutputDoneFlagOff } from "@/lib/session-store";
 import type { U3Data } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
 
@@ -54,8 +55,9 @@ export async function PATCH(req: NextRequest) {
       JSON.stringify({ ...u1, hold_flag: body.hold_flag, hold_reason })
     );
 
-    // U3更新: activeセッションが存在する場合のみ checklist_printed_flag を false にする
-    // 失敗してもU1更新は完了済みのためエラーにしない
+    // U3更新: activeセッションが存在する場合のみ checklist_printed_flag / pdf_output_done_flag を false にする
+    // 読み取り失敗は握り潰す（CHECKLIST-FLAG-01）。書き込み失敗は握り潰さない（FLOW-01）。
+    let pendingSessionUpdate: { id: string; data: U3Data } | null = null;
     try {
       const sessionId = await redis.get<string>("session:current");
       if (sessionId) {
@@ -64,15 +66,22 @@ export async function PATCH(req: NextRequest) {
           const sessionData: U3Data =
             typeof sessionRaw === "string" ? JSON.parse(sessionRaw) : sessionRaw;
           if (sessionData.session_status === "active") {
-            await redis.set(
-              `session:${sessionId}`,
-              JSON.stringify({ ...sessionData, checklist_printed_flag: false })
-            );
+            const withChecklistReset = { ...sessionData, checklist_printed_flag: false };
+            pendingSessionUpdate = {
+              id: sessionId,
+              data: applyPdfOutputDoneFlagOff(withChecklistReset),
+            };
           }
         }
       }
     } catch {
-      // セッション更新失敗は握り潰す
+      // セッション読み取り失敗は握り潰す（CHECKLIST-FLAG-01）
+    }
+    if (pendingSessionUpdate) {
+      await redis.set(
+        `session:${pendingSessionUpdate.id}`,
+        JSON.stringify(pendingSessionUpdate.data)
+      );
     }
 
     return Response.json({ success: true });

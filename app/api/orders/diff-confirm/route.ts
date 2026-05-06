@@ -11,6 +11,7 @@ import {
   type OrderSnapshot,
 } from "@/lib/order-store";
 import { getRefetchState, setRefetchState } from "@/lib/refetch-store";
+import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
 
 /** 5フィールドを比較して差分があるか判定する（refetch側と同じ基準） */
@@ -80,6 +81,19 @@ export async function POST(req: Request) {
       ...refetchState,
       diff_confirmed_flag: true,
     });
+
+    try {
+      await clearPdfOutputDoneFlag();
+    } catch (e) {
+      console.error("[diff-confirm] clearPdfOutputDoneFlag failed:", e instanceof Error ? e.message : String(e));
+      return Response.json(
+        {
+          success: false,
+          error: "変更は保存されましたが、PDF出力状態の更新に失敗しました。画面を再読み込みして状態を確認してください。",
+        },
+        { status: 500 }
+      );
+    }
 
     return Response.json({ success: true, diff_confirmed_flag: true });
   } catch (error) {

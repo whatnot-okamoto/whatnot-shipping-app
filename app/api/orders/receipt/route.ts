@@ -4,6 +4,7 @@
 import { NextRequest } from "next/server";
 import { redis } from "@/lib/upstash";
 import type { U1Data } from "@/lib/order-store";
+import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
 
 export async function PATCH(req: NextRequest) {
@@ -52,6 +53,18 @@ export async function PATCH(req: NextRequest) {
       `order:${unique_key}`,
       JSON.stringify({ ...u1, receipt_required: body.receipt_required, receipt_name, receipt_note })
     );
+    try {
+      await clearPdfOutputDoneFlag();
+    } catch (e) {
+      console.error("[receipt] clearPdfOutputDoneFlag failed:", e instanceof Error ? e.message : String(e));
+      return Response.json(
+        {
+          success: false,
+          error: "変更は保存されましたが、PDF出力状態の更新に失敗しました。画面を再読み込みして状態を確認してください。",
+        },
+        { status: 500 }
+      );
+    }
     return Response.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

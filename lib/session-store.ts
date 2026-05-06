@@ -208,3 +208,44 @@ export async function getCurrentSession(): Promise<U3Data | null> {
 
   return typeof raw === "string" ? JSON.parse(raw) : (raw as U3Data);
 }
+
+// ============================================================================
+// pdf_output_done_flag OFF ヘルパー（FLOW-01準拠）
+// ============================================================================
+
+/**
+ * session オブジェクトに pdf_output_done_flag=false を適用した新しいオブジェクトを返す。
+ * 保存は行わない。hold のように、すでに session を読み書きしている API で使う。
+ */
+export function applyPdfOutputDoneFlagOff(session: U3Data): U3Data {
+  return { ...session, pdf_output_done_flag: false };
+}
+
+/**
+ * session:current から active session を取得し、pdf_output_done_flag=false を保存する。
+ * receipt / carrier / diff-confirm のように、session を読んでいない API で使う。
+ *
+ * no-op 条件（エラーではない）:
+ *   - session:current が存在しない
+ *   - session:{session_id} が存在しない
+ *   - session_status が "active" でない
+ *
+ * throw 条件（握り潰さない）:
+ *   - active session が存在するのに redis.set が失敗した場合
+ *   - セッションデータのパースに失敗した場合
+ *   - Upstash 接続エラー
+ */
+export async function clearPdfOutputDoneFlag(): Promise<void> {
+  const sessionId = await redis.get<string>("session:current");
+  if (!sessionId) return;
+
+  const raw = await redis.get<string>(`session:${sessionId}`);
+  if (!raw) return;
+
+  const session: U3Data =
+    typeof raw === "string" ? JSON.parse(raw) : (raw as U3Data);
+  if (session.session_status !== "active") return;
+
+  const updated = applyPdfOutputDoneFlagOff(session);
+  await redis.set(`session:${sessionId}`, JSON.stringify(updated));
+}

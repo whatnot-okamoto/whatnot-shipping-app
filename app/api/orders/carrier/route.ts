@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 import { redis } from "@/lib/upstash";
 import type { U1Data } from "@/lib/order-store";
 import type { Carrier } from "@/lib/carrier-mapping";
+import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
 
 const ALLOWED_CARRIERS = new Set<string>(["sagawa", "yamato", "nekopos"]);
@@ -45,6 +46,18 @@ export async function PATCH(req: NextRequest) {
     }
 
     await redis.set(`order:${unique_key}`, JSON.stringify({ ...u1, carrier }));
+    try {
+      await clearPdfOutputDoneFlag();
+    } catch (e) {
+      console.error("[carrier] clearPdfOutputDoneFlag failed:", e instanceof Error ? e.message : String(e));
+      return Response.json(
+        {
+          success: false,
+          error: "変更は保存されましたが、PDF出力状態の更新に失敗しました。画面を再読み込みして状態を確認してください。",
+        },
+        { status: 500 }
+      );
+    }
     return Response.json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
