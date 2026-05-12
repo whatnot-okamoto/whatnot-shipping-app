@@ -7,12 +7,19 @@ import DiffConfirmModal, { type DiffResult } from "./components/DiffConfirmModal
 import SessionLockConfirmModal from "./components/SessionLockConfirmModal";
 import LockedStageView, { type LockedBundleInfo } from "./components/LockedStageView";
 
+type CsvStatusMap = {
+  nekopos: "pending" | "done" | "skipped" | "error";
+  sagawa: "pending" | "done" | "skipped" | "error";
+  yamato: "pending" | "done" | "skipped" | "error";
+};
+
 type SessionInfo = {
   session_status: "none" | "active" | "unlocked" | "completed";
   locked_bundle_group_ids: string[];
   refetch_done_flag: boolean;
   diff_confirmed_flag: boolean;
   pdf_output_done_flag?: boolean;
+  csv_status?: CsvStatusMap;
 };
 
 type Meta = {
@@ -46,6 +53,7 @@ type SessionCurrentApiResponse = {
     checklist_printed_flag: boolean;
     emergency_unlock_log: unknown[];
     pdf_output_done_flag?: boolean;
+    csv_status?: CsvStatusMap;
   } | null;
   locked_bundles?: LockedBundleInfo[];
   error?: string;
@@ -146,6 +154,7 @@ export default function OrdersPage() {
         refetch_done_flag: data.session.refetch_done_flag,
         diff_confirmed_flag: data.session.diff_confirmed_flag,
         pdf_output_done_flag: data.session.pdf_output_done_flag ?? false,
+        csv_status: data.session.csv_status,
       });
       setLockedBundles(data.locked_bundles ?? []);
       return true;
@@ -309,6 +318,7 @@ export default function OrdersPage() {
         <LockedStageView
           lockedBundles={lockedBundles}
           pdfOutputDoneFlag={session.pdf_output_done_flag ?? false}
+          csvStatus={session.csv_status ?? { nekopos: "pending", sagawa: "pending", yamato: "pending" }}
           onRefreshSession={async () => { await fetchCurrentSession(); }}
         />
       ) : (

@@ -24,6 +24,23 @@ export type EmergencyUnlockLogEntry = {
   reason: string;
 };
 
+/** CSV出力の進行状態（キャリアごと）。FLOW-01 S3準拠。 */
+export type CsvStatus = "pending" | "done" | "skipped" | "error";
+
+/** csv_status マップ型（ネコポス→佐川→ヤマトの順序固定 FLOW-01 R1準拠）。 */
+export type CsvStatusMap = {
+  nekopos: CsvStatus;
+  sagawa: CsvStatus;
+  yamato: CsvStatus;
+};
+
+/** csv_status の初期値（全キャリア pending）。 */
+const CSV_STATUS_INITIAL: CsvStatusMap = {
+  nekopos: "pending",
+  sagawa: "pending",
+  yamato: "pending",
+};
+
 /**
  * U3: `session:{session_id}` に保存するデータ本体。
  * snapshot・diff_temp は別キーで後続実装（本型には含まない）。
@@ -39,6 +56,8 @@ export type U3Data = {
   emergency_unlock_log: EmergencyUnlockLogEntry[];
   /** PDF一括出力完了フラグ。PDF生成成功時にtrueへ更新する（Step 4-C-2）。 */
   pdf_output_done_flag?: boolean;
+  /** CSV出力進行状態（キャリアごと）。pdf_output_done_flag OFFと連動してリセット（FLOW-01 S3）。 */
+  csv_status?: CsvStatusMap;
 };
 
 // ============================================================================
@@ -78,6 +97,7 @@ export async function startSession(
     diff_confirmed_flag: diffConfirmedFlag,
     checklist_printed_flag: false,
     pdf_output_done_flag: false,
+    csv_status: { ...CSV_STATUS_INITIAL },
     emergency_unlock_log: [],
   };
   await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
@@ -214,11 +234,12 @@ export async function getCurrentSession(): Promise<U3Data | null> {
 // ============================================================================
 
 /**
- * session オブジェクトに pdf_output_done_flag=false を適用した新しいオブジェクトを返す。
+ * session オブジェクトに pdf_output_done_flag=false および csv_status リセットを適用した新しいオブジェクトを返す。
  * 保存は行わない。hold のように、すでに session を読み書きしている API で使う。
+ * pdf_output_done_flag OFFと同時に csv_status を全 pending にリセットする（FLOW-01 連鎖リセット）。
  */
 export function applyPdfOutputDoneFlagOff(session: U3Data): U3Data {
-  return { ...session, pdf_output_done_flag: false };
+  return { ...session, pdf_output_done_flag: false, csv_status: { ...CSV_STATUS_INITIAL } };
 }
 
 /**
@@ -246,6 +267,7 @@ export async function clearPdfOutputDoneFlag(): Promise<void> {
     typeof raw === "string" ? JSON.parse(raw) : (raw as U3Data);
   if (session.session_status !== "active") return;
 
+  // applyPdfOutputDoneFlagOff は pdf_output_done_flag=false + csv_status リセットを適用する
   const updated = applyPdfOutputDoneFlagOff(session);
   await redis.set(`session:${sessionId}`, JSON.stringify(updated));
 }

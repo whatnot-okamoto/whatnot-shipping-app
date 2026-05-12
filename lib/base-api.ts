@@ -157,6 +157,47 @@ export function getReceiverName(order: BaseOrder): string {
 export const getReceiverFullName = getReceiverName;
 
 /**
+ * order_receiver が有効かどうかを返す（CSV生成のD案フォールバック判定用）。
+ * 内部の isReceiverPresent と同じロジック。U2レベルの全件チェックに使用する。
+ */
+export function isOrderReceiverValid(order: BaseOrder): boolean {
+  return isReceiverPresent(order.order_receiver);
+}
+
+/**
+ * お届け先の電話番号を返す（DEST-01 D案フォールバック）。
+ * フォールバック: order_receiver が無効な場合は purchaser の tel を使用。
+ */
+export function getReceiverTel(order: BaseOrder): string {
+  if (isReceiverPresent(order.order_receiver)) {
+    return order.order_receiver!.tel;
+  }
+  return order.tel;
+}
+
+/**
+ * お届け先の address フィールドのみを返す（address2を含まない）。
+ * CSV生成でヤマト col12・佐川住所分割に使用する（DEST-01 D案フォールバック）。
+ */
+export function getReceiverAddressStreetOnly(order: BaseOrder): string {
+  if (isReceiverPresent(order.order_receiver)) {
+    return order.order_receiver!.address;
+  }
+  return order.address;
+}
+
+/**
+ * お届け先の address2（建物名・部屋番号等）を返す。
+ * ヤマト col13・佐川 col7 に使用する（DEST-01 D案フォールバック）。
+ */
+export function getReceiverAddressBuilding(order: BaseOrder): string {
+  if (isReceiverPresent(order.order_receiver)) {
+    return order.order_receiver!.address2 ?? "";
+  }
+  return order.address2 ?? "";
+}
+
+/**
  * お届け先の郵便番号を返す（DEST-01 D1/D3 対応）。
  * フォールバック: order_receiver が null または空の場合は購入者フィールドを使用。
  */

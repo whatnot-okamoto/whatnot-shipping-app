@@ -26,6 +26,8 @@ export type LockedBundleInfo = {
   receipt_required: boolean;
   /** receipt_required===true かつ receipt_name が空の配下U1が存在する場合 true（領収書宛名未入力警告用） */
   receipt_name_empty: boolean;
+  /** U2 に保存済みの送り状番号。未入力の場合は "" */
+  tracking_number: string;
 };
 
 export async function GET(req: Request) {
@@ -104,6 +106,7 @@ export async function GET(req: Request) {
           hold_flag_anomaly: holdFlagAnomaly,
           receipt_required: receiptRequired,
           receipt_name_empty: receiptNameEmpty,
+          tracking_number: bundle.tracking_number,
         };
       })
       .filter((b): b is LockedBundleInfo => b !== null);
