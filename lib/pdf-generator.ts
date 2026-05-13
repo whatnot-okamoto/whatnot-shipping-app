@@ -255,7 +255,7 @@ function addDeliveryNotePage(
   }
   text(
     page,
-    `${destination.lastName}${destination.firstName}　様`,
+    `${destination.lastName} ${destination.firstName}　様`,
     MARGIN,
     leftY,
     boldFont,
@@ -280,7 +280,7 @@ function addDeliveryNotePage(
     }
     text(
       page,
-      `${order.last_name}${order.first_name}`,
+      `${order.last_name} ${order.first_name}`,
       MARGIN,
       leftY,
       regularFont,

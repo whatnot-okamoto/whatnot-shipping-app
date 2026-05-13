@@ -162,7 +162,7 @@ function extractRecipient(
   if (source === "receiver") {
     const r = order.order_receiver!;
     return {
-      fullName: `${r.last_name}${r.first_name}`,
+      fullName: `${r.last_name} ${r.first_name}`,
       tel: r.tel,
       zip: r.zip_code,
       prefecture: r.prefecture,
@@ -171,7 +171,7 @@ function extractRecipient(
     };
   }
   return {
-    fullName: `${order.last_name}${order.first_name}`,
+    fullName: `${order.last_name} ${order.first_name}`,
     tel: order.tel,
     zip: order.zip_code,
     prefecture: order.prefecture,
@@ -513,6 +513,8 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
   row[7] = col8;
   // col9: 氏名のオーバーフロー（超過なければ空欄）
   row[8] = col9;
+  // col10: お客様管理番号（代表U1のunique_key。BUNDLE-01 B2準拠: order_unique_keysはソート済み、orders[0]が代表）
+  row[9] = orders[0].unique_key;
   // col25: 品名
   row[24] = col25;
   // col42: 出荷個数（固定 "1"・E-1補正メモ）
