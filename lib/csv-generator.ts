@@ -7,6 +7,17 @@
 import iconv from "iconv-lite";
 import type { BaseOrder } from "@/lib/base-api";
 import { isOrderReceiverValid } from "@/lib/base-api";
+import {
+  YAMATO_SENDER_TEL,
+  YAMATO_SENDER_ZIP,
+  YAMATO_SENDER_ADDRESS,
+  YAMATO_SENDER_BLDG,
+  YAMATO_SENDER_NAME,
+  YAMATO_BILLING_CODE,
+  YAMATO_BILLING_CLASS,
+  YAMATO_FREIGHT_CODE,
+  YAMATO_KEISHO,
+} from "@/lib/shipping-csv-config";
 
 // ============================================================================
 // 型定義
@@ -296,6 +307,23 @@ export function expandU2ToCsvUnits(
 // ヤマト/ネコポス CSV生成（B2クラウド・42列）
 // ============================================================================
 
+/** B2 CSV出荷予定日をAsia/Tokyo基準のYYYY/MM/DD形式で返す。 */
+function getTodayJstForB2Csv(): string {
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  if (!year || !month || !day) {
+    throw new Error("Failed to format JST date for B2 CSV");
+  }
+  return `${year}/${month}/${day}`;
+}
+
 /**
  * ヤマト宅急便またはネコポスのCSV行を生成する。
  * 対象: carrier === "yamato" または "nekopos"。
@@ -361,6 +389,8 @@ function buildYamatoRow(
   const row = new Array<string>(42).fill("");
   // col2: 送り状種類 ネコポス="A" / 宅急便="0"
   row[1] = carrier === "nekopos" ? "A" : "0";
+  // col5: 出荷予定日（Asia/Tokyo基準 YYYY/MM/DD）
+  row[4] = getTodayJstForB2Csv();
   // col9: お届け先電話番号
   row[8] = r.tel;
   // col11: お届け先郵便番号
@@ -371,16 +401,30 @@ function buildYamatoRow(
   row[12] = col13;
   // col16: 氏名
   row[15] = col16;
+  // col18: 敬称
+  row[17] = YAMATO_KEISHO;
+  // col20: ご依頼主電話番号
+  row[19] = YAMATO_SENDER_TEL;
+  // col21: ご依頼主電話番号枝番 → 空欄
+  // col22: ご依頼主郵便番号
+  row[21] = YAMATO_SENDER_ZIP;
+  // col23: ご依頼主住所
+  row[22] = YAMATO_SENDER_ADDRESS;
+  // col24: ご依頼主建物名アパートマンション
+  row[23] = YAMATO_SENDER_BLDG;
+  // col25: ご依頼主名
+  row[24] = YAMATO_SENDER_NAME;
+  // col26: ご依頼主名(ｶﾅ) → 空欄
   // col28: 品名（固定）
   row[27] = "WHATNOT HARDWEAR STORE ご購入商品";
   // col38: 発行枚数 → 空欄（E-1補正メモ）
   // col39: 個数口表示フラグ → 空欄（E-1補正メモ）
-  // col40: ご請求先顧客コード（固定）
-  row[39] = "794820301";
-  // col41: ご請求先分類コード（固定）
-  row[40] = "1";
-  // col42: 運賃管理番号（固定）
-  row[41] = "1";
+  // col40: ご請求先顧客コード（E-2補正メモ準拠：10桁ゼロ埋め）
+  row[39] = YAMATO_BILLING_CODE;
+  // col41: ご請求先分類コード（E-2補正メモ準拠：3桁ゼロ埋め）
+  row[40] = YAMATO_BILLING_CLASS;
+  // col42: 運賃管理番号（E-2補正メモ準拠：2桁ゼロ埋め）
+  row[41] = YAMATO_FREIGHT_CODE;
 
   return row;
 }
