@@ -12,5 +12,6 @@ export const PDF_CONFIG = {
 
 export const PAYMENT_LABELS: Record<string, string> = {
   creditcard: "クレジットカード決済", // 現在の想定値（BASE API復旧後に実値確認）
-  // TODO: paypal / paypay 等はBASE API実値確認後に追記する
+  paypay: "PayPay",  // 実値確認済み（2026-05-14 Step 4-D本番確認）
+  // TODO: paypal 等はBASE API実値確認後に追記する
 };
