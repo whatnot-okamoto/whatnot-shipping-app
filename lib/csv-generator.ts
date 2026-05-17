@@ -353,27 +353,15 @@ function buildYamatoRow(
   const rep = orders[0];
   const r = extractRecipient(rep, source);
 
-  // 列12: 都道府県 + 住所（全角32文字上限）
+  // 列12: 都道府県 + 住所
+  // 文字数超過時もCSV出力を継続する（B2-ADDRESS-FORMAT-01 最小修正）
+  // B2 Cloud側の取込エラー確認・修正運用に委ねる。切り捨て・自動分割は行わない。
   const col12 = `${r.prefecture}${r.addressStreet}`;
-  if (countZenkaku(col12) > 32) {
-    throw new CsvGeneratorError(
-      `ヤマトCSV（bundle_group_id: ${bundleGroupId}）のお届け先住所が32文字を超えています` +
-        `（都道府県+住所: "${col12}"、${countZenkaku(col12)}文字）。` +
-        `住所を短縮してください。`,
-      bundleGroupId
-    );
-  }
 
-  // 列13: 建物名（全角16文字上限）
+  // 列13: 建物名
+  // 文字数超過時もCSV出力を継続する（B2-ADDRESS-FORMAT-01 最小修正）
+  // B2 Cloud側の取込エラー確認・修正運用に委ねる。切り捨て・自動分割は行わない。
   const col13 = r.addressBuilding;
-  if (countZenkaku(col13) > 16) {
-    throw new CsvGeneratorError(
-      `ヤマトCSV（bundle_group_id: ${bundleGroupId}）のお届け先建物名が16文字を超えています` +
-        `（"${col13}"、${countZenkaku(col13)}文字）。` +
-        `建物名を短縮してください。`,
-      bundleGroupId
-    );
-  }
 
   // 列16: 氏名（全角16文字上限）
   const col16 = r.fullName;
