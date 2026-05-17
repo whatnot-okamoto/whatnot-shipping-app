@@ -387,6 +387,8 @@ function buildYamatoRow(
 
   // 42列の行を構築（E-1補正メモ: 38・39列目は空欄）
   const row = new Array<string>(42).fill("");
+  // col1: お客様管理番号（佐川CSV col.10と同様。BUNDLE-01 B2準拠: orders[0]が代表）
+  row[0] = orders[0].unique_key;
   // col2: 送り状種類 ネコポス="A" / 宅急便="0"
   row[1] = carrier === "nekopos" ? "A" : "0";
   // col5: 出荷予定日（Asia/Tokyo基準 YYYY/MM/DD）
