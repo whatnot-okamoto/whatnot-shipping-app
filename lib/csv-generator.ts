@@ -558,6 +558,56 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
   // col44: クール便指定（固定 "001"）
   row[43] = "001";
 
+  // col.18〜22: ご依頼主欄 — 別送注文（source === "receiver"）のみ出力
+  if (source === "receiver") {
+    const purchaser = extractRecipient(rep, "purchaser");
+
+    // 必須5項目欠損チェック（個人情報の具体値はメッセージに含めない）
+    if (!purchaser.tel) {
+      throw new CsvGeneratorError(
+        `別送注文の注文主情報（tel）が取得できません（bundle_group_id: ${bundleGroupId}）`,
+        bundleGroupId
+      );
+    }
+    if (!purchaser.zip) {
+      throw new CsvGeneratorError(
+        `別送注文の注文主情報（zip_code）が取得できません（bundle_group_id: ${bundleGroupId}）`,
+        bundleGroupId
+      );
+    }
+    if (!purchaser.prefecture) {
+      throw new CsvGeneratorError(
+        `別送注文の注文主情報（prefecture）が取得できません（bundle_group_id: ${bundleGroupId}）`,
+        bundleGroupId
+      );
+    }
+    if (!purchaser.addressStreet) {
+      throw new CsvGeneratorError(
+        `別送注文の注文主情報（addressStreet）が取得できません（bundle_group_id: ${bundleGroupId}）`,
+        bundleGroupId
+      );
+    }
+    if (!purchaser.fullName) {
+      throw new CsvGeneratorError(
+        `別送注文の注文主情報（name）が取得できません（bundle_group_id: ${bundleGroupId}）`,
+        bundleGroupId
+      );
+    }
+
+    // col.18: ご依頼主電話番号
+    row[17] = purchaser.tel;
+    // col.19: ご依頼主郵便番号
+    row[18] = purchaser.zip;
+    // col.20: ご依頼主住所１（都道府県）
+    row[19] = purchaser.prefecture;
+    // col.21: ご依頼主住所２（addressStreet + addressBuilding。addressBuilding 空欄時は addressStreet のみ）
+    row[20] = purchaser.addressBuilding
+      ? `${purchaser.addressStreet}${purchaser.addressBuilding}`
+      : purchaser.addressStreet;
+    // col.22: ご依頼主名称１
+    row[21] = purchaser.fullName;
+  }
+
   return row;
 }
 
