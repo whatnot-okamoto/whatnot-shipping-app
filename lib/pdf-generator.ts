@@ -202,12 +202,80 @@ function truncate(
   return t + "…";
 }
 
+function wrapText(
+  str: string,
+  maxWidth: number,
+  font: PDFFont,
+  fontSize: number
+): string[] {
+  if (!str) return [""];
+  const lines: string[] = [];
+  let currentLine = "";
+  let currentWidth = 0;
+  for (const char of str) {
+    const charWidth = font.widthOfTextAtSize(char, fontSize);
+    if (currentWidth + charWidth > maxWidth && currentLine.length > 0) {
+      const lastSpace = currentLine.lastIndexOf(" ");
+      if (lastSpace > 0 && lastSpace >= currentLine.length - 8) {
+        lines.push(currentLine.slice(0, lastSpace));
+        const remainder = currentLine.slice(lastSpace + 1) + char;
+        currentLine = remainder;
+        currentWidth = font.widthOfTextAtSize(remainder, fontSize);
+      } else {
+        lines.push(currentLine);
+        currentLine = char;
+        currentWidth = charWidth;
+      }
+    } else {
+      currentLine += char;
+      currentWidth += charWidth;
+    }
+  }
+  if (currentLine.length > 0 || lines.length === 0) {
+    lines.push(currentLine);
+  }
+  return lines;
+}
+
 function formatDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
 function formatYen(amount: number): string {
   return `¥${amount.toLocaleString("ja-JP")}`;
+}
+
+// ============================================================================
+// 続きページ 簡略ヘッダー
+// ============================================================================
+
+function addContinuationHeader(
+  page: PDFPage,
+  order: BaseOrder,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  y: number
+): number {
+  const col4R = RIGHT_EDGE;
+  const col3R = RIGHT_EDGE - CONTENT_WIDTH * 0.19;
+  const col2R = col3R - CONTENT_WIDTH * 0.14;
+  const janColX = MARGIN;
+  const titleColX = MARGIN + 58 + 4;
+
+  text(page, "納品書（続き）", MARGIN, y, fonts.bold, 10);
+  y -= 14;
+  text(page, `注文ID: ${order.unique_key}`, MARGIN, y, fonts.regular, 8);
+  y -= 14;
+  hline(page, MARGIN, y, CONTENT_WIDTH, 0.5);
+  y -= 14;
+  text(page, "JAN", janColX, y, fonts.bold, 7);
+  text(page, "商品名", titleColX, y, fonts.bold, 7);
+  textRight(page, "数量", col2R, y, fonts.bold, 7);
+  textRight(page, "単価", col3R, y, fonts.bold, 7);
+  textRight(page, "金額", col4R, y, fonts.bold, 7);
+  y -= 12;
+  hline(page, MARGIN, y, CONTENT_WIDTH, 0.3);
+  y -= 10;
+  return y;
 }
 
 // ============================================================================
@@ -221,7 +289,7 @@ function addDeliveryNotePage(
   regularFont: PDFFont,
   boldFont: PDFFont
 ): void {
-  const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+  let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
   const { destination, showBilling } = resolveRecipient(order);
   const issuer = PDF_CONFIG.issuer;
 
@@ -354,7 +422,7 @@ function addDeliveryNotePage(
   const janColW = 58;           // 13桁JAN用（フォント7pt換算）
   const janColX = MARGIN;
   const titleColX = MARGIN + janColW + 4;
-  const col1MaxW = col2R - titleColX - 8;
+  const col1MaxW = col2R - titleColX - 28;
 
   // ヘッダー行
   text(page, "JAN", janColX, y, boldFont, 7);
@@ -366,36 +434,56 @@ function addDeliveryNotePage(
   hline(page, MARGIN, y, CONTENT_WIDTH, 0.3);
   y -= 10;
 
-  // 明細行
+  // 明細行（折り返し・改ページ対応）
   for (const item of order.order_items) {
-    if (item.barcode) {
-      text(page, item.barcode, janColX, y, regularFont, 7);
+    const wrappedLines = wrapText(item.title, col1MaxW, regularFont, 7);
+    const contentHeight = wrappedLines.length * 12 + (item.variation ? 10 : 0);
+    const rowHeight = contentHeight + 4;
+
+    if (y - MARGIN < rowHeight) {
+      page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+      y = A4_HEIGHT - MARGIN;
+      y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
     }
-    text(
-      page,
-      truncate(item.title, col1MaxW, regularFont, 7),
-      titleColX,
-      y,
-      regularFont,
-      7
-    );
-    textRight(page, `${item.amount}`, col2R, y, regularFont, 7);
-    textRight(page, formatYen(item.price), col3R, y, regularFont, 7);
-    textRight(page, formatYen(item.price * item.amount), col4R, y, regularFont, 7);
+
+    const itemTopY = y;
+
+    if (item.barcode) {
+      text(page, item.barcode, janColX, itemTopY, regularFont, 7);
+    }
+
+    let drawY = itemTopY;
+    for (const line of wrappedLines) {
+      text(page, line, titleColX, drawY, regularFont, 7);
+      drawY -= 12;
+    }
+
     if (item.variation) {
-      y -= 10;
       text(
         page,
         truncate(item.variation, col1MaxW, regularFont, 6),
         titleColX,
-        y,
+        drawY,
         regularFont,
         6
       );
-      y -= 12;
-    } else {
-      y -= 12;
+      drawY -= 10;
     }
+
+    textRight(page, `${item.amount}`, col2R, itemTopY, regularFont, 7);
+    textRight(page, formatYen(item.price), col3R, itemTopY, regularFont, 7);
+    textRight(page, formatYen(item.price * item.amount), col4R, itemTopY, regularFont, 7);
+
+    hline(page, MARGIN, drawY, CONTENT_WIDTH, 0.3);
+
+    y = itemTopY - rowHeight;
+  }
+
+  // 合計欄 収まり判定
+  if (y - MARGIN < 50) {
+    page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+    y = A4_HEIGHT - MARGIN;
+    y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
   }
 
   y -= 4;
