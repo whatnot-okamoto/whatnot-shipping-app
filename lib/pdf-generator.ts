@@ -438,7 +438,7 @@ function addDeliveryNotePage(
   for (const item of order.order_items) {
     const wrappedLines = wrapText(item.title, col1MaxW, regularFont, 7);
     const contentHeight = wrappedLines.length * 12 + (item.variation ? 10 : 0);
-    const rowHeight = contentHeight + 4;
+    const rowHeight = contentHeight + 10;
 
     if (y - MARGIN < rowHeight) {
       page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
