@@ -2,13 +2,13 @@
 // pdf-lib + @pdf-lib/fontkit を使用
 // フォント: public/fonts/NotoSansJP-Regular.otf / NotoSansJP-Bold.otf
 
-import { PDFDocument, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { PDFDocument, rgb, type PDFFont, type PDFPage, type PDFImage } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { readFile } from "fs/promises";
 import path from "path";
 import type { BaseOrder } from "./base-api";
 import type { U1Data } from "./order-store";
-import { PDF_CONFIG, PAYMENT_LABELS } from "./pdf-config";
+import { PDF_CONFIG, PAYMENT_LABELS, LOGO_SIZE_PT, LOGO_MARGIN_BOTTOM } from "./pdf-config";
 
 const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
@@ -72,10 +72,19 @@ export async function generateShippingDocumentsPdf(
   const regularFont = await pdfDoc.embedFont(regularFontBytes, { subset: false });
   const boldFont = await pdfDoc.embedFont(boldFontBytes, { subset: false });
 
+  let logoImage: PDFImage | null = null;
+  try {
+    const logoPath = path.join(process.cwd(), "public", "images", "logo.png");
+    const logoBytes = await readFile(logoPath);
+    logoImage = await pdfDoc.embedPng(logoBytes);
+  } catch {
+    console.warn("[PDF-LOGO-01] logo.png load failed. Fallback to no-logo PDF.");
+  }
+
   for (const { order, orderState } of inputs) {
-    addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont);
+    addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont, logoImage);
     if (orderState.receipt_required === true) {
-      addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont);
+      addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont, logoImage);
     }
   }
 
@@ -287,7 +296,8 @@ function addDeliveryNotePage(
   order: BaseOrder,
   orderState: U1Data,
   regularFont: PDFFont,
-  boldFont: PDFFont
+  boldFont: PDFFont,
+  logoImage: PDFImage | null
 ): void {
   let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
   const { destination, showBilling } = resolveRecipient(order);
@@ -358,6 +368,15 @@ function addDeliveryNotePage(
   }
 
   // 右: 発行者情報
+  if (logoImage) {
+    page.drawImage(logoImage, {
+      x: midX,
+      y: rightY - LOGO_SIZE_PT,
+      width: LOGO_SIZE_PT,
+      height: LOGO_SIZE_PT,
+    });
+    rightY -= LOGO_SIZE_PT + LOGO_MARGIN_BOTTOM;
+  }
   text(
     page,
     truncate(issuer.storeName, rightMaxW, boldFont, 9),
@@ -369,7 +388,7 @@ function addDeliveryNotePage(
   rightY -= 13;
   text(
     page,
-    truncate(issuer.companyName, rightMaxW, regularFont, 8),
+    truncate(issuer.companyLabel, rightMaxW, regularFont, 8),
     midX,
     rightY,
     regularFont,
@@ -385,11 +404,17 @@ function addDeliveryNotePage(
     7
   );
   rightY -= 11;
-  text(page, `TEL: ${issuer.phone}`, midX, rightY, regularFont, 7);
+  text(page, issuer.phone, midX, rightY, regularFont, 7);
+  rightY -= 11;
+  text(page, issuer.web, midX, rightY, regularFont, 7);
+  rightY -= 11;
+  text(page, issuer.onlineShop, midX, rightY, regularFont, 7);
+  rightY -= 11;
+  text(page, issuer.email, midX, rightY, regularFont, 7);
   rightY -= 11;
   text(
     page,
-    `登録番号: ${issuer.invoiceRegistrationNumber}`,
+    `登録番号：${issuer.invoiceRegistrationNumber}`,
     midX,
     rightY,
     regularFont,
@@ -513,7 +538,8 @@ function addReceiptPage(
   order: BaseOrder,
   orderState: U1Data,
   regularFont: PDFFont,
-  boldFont: PDFFont
+  boldFont: PDFFont,
+  logoImage: PDFImage | null
 ): void {
   const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
   const issuer = PDF_CONFIG.issuer;
@@ -561,13 +587,28 @@ function addReceiptPage(
   hline(page, MARGIN, y, CONTENT_WIDTH, 0.8);
   y -= 16;
 
+  if (logoImage) {
+    page.drawImage(logoImage, {
+      x: MARGIN,
+      y: y - LOGO_SIZE_PT,
+      width: LOGO_SIZE_PT,
+      height: LOGO_SIZE_PT,
+    });
+    y -= LOGO_SIZE_PT + LOGO_MARGIN_BOTTOM;
+  }
   text(page, issuer.storeName, MARGIN, y, boldFont, 11);
   y -= 16;
-  text(page, issuer.companyName, MARGIN, y, regularFont, 10);
+  text(page, issuer.companyLabel, MARGIN, y, regularFont, 10);
   y -= 14;
   text(page, issuer.address, MARGIN, y, regularFont, 9);
   y -= 13;
-  text(page, `TEL: ${issuer.phone}`, MARGIN, y, regularFont, 9);
+  text(page, issuer.phone, MARGIN, y, regularFont, 9);
+  y -= 13;
+  text(page, issuer.web, MARGIN, y, regularFont, 9);
+  y -= 13;
+  text(page, issuer.onlineShop, MARGIN, y, regularFont, 9);
+  y -= 13;
+  text(page, issuer.email, MARGIN, y, regularFont, 9);
   y -= 13;
   text(
     page,
