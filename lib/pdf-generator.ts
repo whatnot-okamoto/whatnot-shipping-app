@@ -301,6 +301,7 @@ function addDeliveryNotePage(
 ): void {
   let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
   const { destination, showBilling } = resolveRecipient(order);
+  const destTel = showBilling ? (order.order_receiver?.tel ?? "") : (order.tel ?? "");
   const issuer = PDF_CONFIG.issuer;
 
   const titleText = "納　品　書";
@@ -350,7 +351,12 @@ function addDeliveryNotePage(
   const destAddr = formatAddress(destination);
   if (destAddr) {
     text(page, truncate(destAddr, leftMaxW, regularFont, 8), MARGIN, leftY, regularFont, 8);
-    leftY -= 20;
+    leftY -= 12;
+    if (destTel) {
+      text(page, `TEL: ${destTel}`, MARGIN, leftY, regularFont, 8);
+      leftY -= 12;
+    }
+    leftY -= 8;
   }
   text(
     page,
@@ -377,14 +383,21 @@ function addDeliveryNotePage(
       );
       leftY -= 10;
     }
+    if (order.tel) {
+      text(page, `TEL: ${order.tel}`, MARGIN, leftY, regularFont, 7);
+      leftY -= 10;
+    }
     text(
       page,
-      `${order.last_name} ${order.first_name}`,
+      `${order.last_name} ${order.first_name} 様`,
       MARGIN,
       leftY,
       regularFont,
       7
     );
+    leftY -= 12;
+  } else {
+    text(page, "請求先：お届け先と同じ", MARGIN, leftY, regularFont, 8);
     leftY -= 12;
   }
 
@@ -480,7 +493,7 @@ function addDeliveryNotePage(
   }
 
   // 合計欄 収まり判定
-  if (y - MARGIN < 50) {
+  if (y - MARGIN < 62) {
     page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
     y = A4_HEIGHT - MARGIN;
     y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
@@ -499,9 +512,14 @@ function addDeliveryNotePage(
   hline(page, col3R - 25, y, col4R - col3R + 25, 0.3);
   y -= 12;
 
-  // 合計
-  textRight(page, "合　計", col3R, y, boldFont, 9);
+  // 合計金額
+  textRight(page, "合計金額", col3R, y, boldFont, 9);
   textRight(page, formatYen(order.total), col4R, y, boldFont, 9);
+  y -= 14;
+
+  // 決済方法
+  const paymentLabel = PAYMENT_LABELS[order.payment] ?? order.payment;
+  text(page, `決済方法：${paymentLabel}`, MARGIN, y, regularFont, 8);
 }
 
 // ============================================================================
