@@ -350,7 +350,7 @@ function addDeliveryNotePage(
   const destAddr = formatAddress(destination);
   if (destAddr) {
     text(page, truncate(destAddr, leftMaxW, regularFont, 8), MARGIN, leftY, regularFont, 8);
-    leftY -= 12;
+    leftY -= 20;
   }
   text(
     page,
@@ -389,7 +389,8 @@ function addDeliveryNotePage(
   }
 
   // 右: 発行者情報（左寄せ）
-  const issuerX = MARGIN + CONTENT_WIDTH * 0.52;
+  const issuerOffset = boldFont.widthOfTextAtSize("WHATNOT", 9);
+  const issuerX = MARGIN + CONTENT_WIDTH * 0.52 + issuerOffset;
   const rightMaxW = RIGHT_EDGE - issuerX;
   text(page, truncate(issuer.storeName, rightMaxW, boldFont, 9), issuerX, rightY, boldFont, 9);
   rightY -= 13;

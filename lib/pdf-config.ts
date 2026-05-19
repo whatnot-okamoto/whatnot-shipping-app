@@ -5,8 +5,8 @@ export const PDF_CONFIG = {
     companyName: "株式会社イトー",
     address: "〒673-0404 兵庫県三木市大村530",
     phone: "TEL: 0794-83-2088",
-    web: "Web: https://whatnot.jp/",
-    onlineShop: "OnlineShop（BASE）: https://whatnot.theshop.jp/",
+    web: "Web: https://whatnot.jp",
+    onlineShop: "OnlineShop（BASE）: https://whatnot.theshop.jp",
     email: "Mail: info@whatnot.jp",
     invoiceRegistrationNumber: "T5140001036660",
     logoPath: null,           // TODO: 将来の白黒PNG差し替え時にここを更新する
