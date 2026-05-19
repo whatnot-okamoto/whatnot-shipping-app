@@ -303,20 +303,42 @@ function addDeliveryNotePage(
   const { destination, showBilling } = resolveRecipient(order);
   const issuer = PDF_CONFIG.issuer;
 
-  // --- タイトル ---
   const titleText = "納　品　書";
   const titleSize = 18;
-  const titleW = boldFont.widthOfTextAtSize(titleText, titleSize);
-  text(page, titleText, (A4_WIDTH - titleW) / 2, 800, boldFont, titleSize);
-  hline(page, MARGIN, 782, CONTENT_WIDTH, 1);
+  const logoGap = 10;
 
-  // --- 二段組: お届け先（左）/ 発行者（右）---
-  const midX = MARGIN + CONTENT_WIDTH * 0.5 + 10;
-  const leftMaxW = midX - MARGIN - 12;
-  const rightMaxW = RIGHT_EDGE - midX;
+  // --- ヘッダー: ロゴ（左）＋タイトル＋注文情報（右肩）---
+  let hlineY: number;
 
-  let leftY = 768;
-  let rightY = 768;
+  if (logoImage) {
+    const logoBottomY = A4_HEIGHT - 15 - LOGO_SIZE_PT;
+    page.drawImage(logoImage, {
+      x: MARGIN,
+      y: logoBottomY,
+      width: LOGO_SIZE_PT,
+      height: LOGO_SIZE_PT,
+    });
+    const titleY = Math.round(logoBottomY + (LOGO_SIZE_PT - titleSize * 0.72) / 2);
+    text(page, titleText, MARGIN + LOGO_SIZE_PT + logoGap, titleY, boldFont, titleSize);
+    textRight(page, `注文ID: ${order.unique_key}`, RIGHT_EDGE, titleY, regularFont, 8);
+    textRight(page, `注文日: ${formatDate(order.ordered)}`, RIGHT_EDGE, titleY - 13, regularFont, 8);
+    hlineY = logoBottomY - 8;
+  } else {
+    const titleW = boldFont.widthOfTextAtSize(titleText, titleSize);
+    text(page, titleText, (A4_WIDTH - titleW) / 2, 800, boldFont, titleSize);
+    textRight(page, `注文ID: ${order.unique_key}`, RIGHT_EDGE, 800, regularFont, 8);
+    textRight(page, `注文日: ${formatDate(order.ordered)}`, RIGHT_EDGE, 787, regularFont, 8);
+    hlineY = 782;
+  }
+
+  hline(page, MARGIN, hlineY, CONTENT_WIDTH, 1);
+
+  // --- 二段組: お届け先（左）/ 発行者（右端寄せ）---
+  const leftMaxW = CONTENT_WIDTH / 2 - 10;
+  const issuerMaxW = CONTENT_WIDTH / 2;
+
+  let leftY = hlineY - 14;
+  let rightY = hlineY - 14;
 
   // 左: お届け先
   text(page, "お届け先", MARGIN, leftY, boldFont, 8);
@@ -367,74 +389,25 @@ function addDeliveryNotePage(
     leftY -= 12;
   }
 
-  // 右: 発行者情報
-  if (logoImage) {
-    page.drawImage(logoImage, {
-      x: midX,
-      y: rightY - LOGO_SIZE_PT,
-      width: LOGO_SIZE_PT,
-      height: LOGO_SIZE_PT,
-    });
-    rightY -= LOGO_SIZE_PT + LOGO_MARGIN_BOTTOM;
-  }
-  text(
-    page,
-    truncate(issuer.storeName, rightMaxW, boldFont, 9),
-    midX,
-    rightY,
-    boldFont,
-    9
-  );
+  // 右: 発行者情報（右端寄せ）
+  textRight(page, truncate(issuer.storeName, issuerMaxW, boldFont, 9), RIGHT_EDGE, rightY, boldFont, 9);
   rightY -= 13;
-  text(
-    page,
-    truncate(issuer.companyLabel, rightMaxW, regularFont, 8),
-    midX,
-    rightY,
-    regularFont,
-    8
-  );
+  textRight(page, truncate(issuer.companyLabel, issuerMaxW, regularFont, 8), RIGHT_EDGE, rightY, regularFont, 8);
   rightY -= 12;
-  text(
-    page,
-    truncate(issuer.address, rightMaxW, regularFont, 7),
-    midX,
-    rightY,
-    regularFont,
-    7
-  );
+  textRight(page, truncate(issuer.address, issuerMaxW, regularFont, 7), RIGHT_EDGE, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.phone, midX, rightY, regularFont, 7);
+  textRight(page, issuer.phone, RIGHT_EDGE, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.web, midX, rightY, regularFont, 7);
+  textRight(page, issuer.web, RIGHT_EDGE, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.onlineShop, midX, rightY, regularFont, 7);
+  textRight(page, issuer.onlineShop, RIGHT_EDGE, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.email, midX, rightY, regularFont, 7);
+  textRight(page, issuer.email, RIGHT_EDGE, rightY, regularFont, 7);
   rightY -= 11;
-  text(
-    page,
-    `登録番号：${issuer.invoiceRegistrationNumber}`,
-    midX,
-    rightY,
-    regularFont,
-    7
-  );
+  textRight(page, `登録番号：${issuer.invoiceRegistrationNumber}`, RIGHT_EDGE, rightY, regularFont, 7);
 
-  // 二段組の下端
+  // 二段組の下端 → 商品明細テーブル区切り
   let y = Math.min(leftY, rightY) - 12;
-  hline(page, MARGIN, y, CONTENT_WIDTH, 0.5);
-  y -= 14;
-
-  // --- 注文情報 ---
-  text(page, `注文ID: ${order.unique_key}`, MARGIN, y, regularFont, 8);
-  y -= 12;
-  text(page, `注文日: ${formatDate(order.ordered)}`, MARGIN, y, regularFont, 8);
-  y -= 12;
-  const carrierLabel =
-    CARRIER_LABELS[orderState.carrier] ?? (orderState.carrier || "未選択");
-  text(page, `配送業者: ${carrierLabel}`, MARGIN, y, regularFont, 8);
-  y -= 18;
 
   // --- 商品明細テーブル ---
   hline(page, MARGIN, y, CONTENT_WIDTH, 0.5);

@@ -13,8 +13,8 @@ export const PDF_CONFIG = {
   },
 } as const;
 
-export const LOGO_SIZE_PT = 60;
-export const LOGO_POSITION = "left" as const;
+export const LOGO_SIZE_PT = 80;
+export const LOGO_POSITION = "header" as const;
 export const LOGO_MARGIN_BOTTOM = 8;
 
 export const PAYMENT_LABELS: Record<string, string> = {
