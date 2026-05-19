@@ -8,7 +8,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import type { BaseOrder } from "./base-api";
 import type { U1Data } from "./order-store";
-import { PDF_CONFIG, PAYMENT_LABELS, LOGO_SIZE_PT, LOGO_MARGIN_BOTTOM } from "./pdf-config";
+import { PDF_CONFIG, PAYMENT_LABELS, LOGO_SIZE_PT } from "./pdf-config";
 
 const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
@@ -305,7 +305,7 @@ function addDeliveryNotePage(
 
   const titleText = "納　品　書";
   const titleSize = 18;
-  const logoGap = 10;
+  const logoGap = 40;
 
   // --- ヘッダー: ロゴ（左）＋タイトル＋注文情報（右肩）---
   let hlineY: number;
@@ -333,12 +333,11 @@ function addDeliveryNotePage(
 
   hline(page, MARGIN, hlineY, CONTENT_WIDTH, 1);
 
-  // --- 二段組: お届け先（左）/ 発行者（右端寄せ）---
+  // --- 二段組: お届け先（左）/ 発行者（右）---
   const leftMaxW = CONTENT_WIDTH / 2 - 10;
-  const issuerMaxW = CONTENT_WIDTH / 2;
 
-  let leftY = hlineY - 14;
-  let rightY = hlineY - 14;
+  let leftY = hlineY - 22;
+  let rightY = hlineY - 22;
 
   // 左: お届け先
   text(page, "お届け先", MARGIN, leftY, boldFont, 8);
@@ -361,7 +360,7 @@ function addDeliveryNotePage(
     boldFont,
     10
   );
-  leftY -= 18;
+  leftY -= 20;
 
   if (showBilling) {
     text(page, "（請求先）", MARGIN, leftY, regularFont, 7);
@@ -389,22 +388,24 @@ function addDeliveryNotePage(
     leftY -= 12;
   }
 
-  // 右: 発行者情報（右端寄せ）
-  textRight(page, truncate(issuer.storeName, issuerMaxW, boldFont, 9), RIGHT_EDGE, rightY, boldFont, 9);
+  // 右: 発行者情報（左寄せ）
+  const issuerX = MARGIN + CONTENT_WIDTH * 0.52;
+  const rightMaxW = RIGHT_EDGE - issuerX;
+  text(page, truncate(issuer.storeName, rightMaxW, boldFont, 9), issuerX, rightY, boldFont, 9);
   rightY -= 13;
-  textRight(page, truncate(issuer.companyLabel, issuerMaxW, regularFont, 8), RIGHT_EDGE, rightY, regularFont, 8);
+  text(page, truncate(issuer.companyLabel, rightMaxW, regularFont, 8), issuerX, rightY, regularFont, 8);
   rightY -= 12;
-  textRight(page, truncate(issuer.address, issuerMaxW, regularFont, 7), RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, truncate(issuer.address, rightMaxW, regularFont, 7), issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  textRight(page, issuer.phone, RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, issuer.phone, issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  textRight(page, issuer.web, RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, issuer.web, issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  textRight(page, issuer.onlineShop, RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, issuer.onlineShop, issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  textRight(page, issuer.email, RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, issuer.email, issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  textRight(page, `登録番号：${issuer.invoiceRegistrationNumber}`, RIGHT_EDGE, rightY, regularFont, 7);
+  text(page, `登録番号：${issuer.invoiceRegistrationNumber}`, issuerX, rightY, regularFont, 7);
 
   // 二段組の下端 → 商品明細テーブル区切り
   let y = Math.min(leftY, rightY) - 12;
@@ -517,14 +518,31 @@ function addReceiptPage(
   const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
   const issuer = PDF_CONFIG.issuer;
 
-  // --- タイトル ---
   const titleText = "領　収　書";
   const titleSize = 18;
-  const titleW = boldFont.widthOfTextAtSize(titleText, titleSize);
-  text(page, titleText, (A4_WIDTH - titleW) / 2, 800, boldFont, titleSize);
-  hline(page, MARGIN, 782, CONTENT_WIDTH, 1);
+  const logoGap = 40;
+  let hlineY: number;
 
-  let y = 762;
+  if (logoImage) {
+    const logoBottomY = A4_HEIGHT - 15 - LOGO_SIZE_PT;
+    page.drawImage(logoImage, {
+      x: MARGIN,
+      y: logoBottomY,
+      width: LOGO_SIZE_PT,
+      height: LOGO_SIZE_PT,
+    });
+    const titleY = Math.round(logoBottomY + (LOGO_SIZE_PT - titleSize * 0.72) / 2);
+    text(page, titleText, MARGIN + LOGO_SIZE_PT + logoGap, titleY, boldFont, titleSize);
+    hlineY = logoBottomY - 8;
+  } else {
+    const titleW = boldFont.widthOfTextAtSize(titleText, titleSize);
+    text(page, titleText, (A4_WIDTH - titleW) / 2, 800, boldFont, titleSize);
+    hlineY = 782;
+  }
+
+  hline(page, MARGIN, hlineY, CONTENT_WIDTH, 1);
+
+  let y = hlineY - 20;
 
   // --- 宛名（空欄時は「　様」）---
   const recipientName = orderState.receipt_name
@@ -560,15 +578,6 @@ function addReceiptPage(
   hline(page, MARGIN, y, CONTENT_WIDTH, 0.8);
   y -= 16;
 
-  if (logoImage) {
-    page.drawImage(logoImage, {
-      x: MARGIN,
-      y: y - LOGO_SIZE_PT,
-      width: LOGO_SIZE_PT,
-      height: LOGO_SIZE_PT,
-    });
-    y -= LOGO_SIZE_PT + LOGO_MARGIN_BOTTOM;
-  }
   text(page, issuer.storeName, MARGIN, y, boldFont, 11);
   y -= 16;
   text(page, issuer.companyLabel, MARGIN, y, regularFont, 10);
