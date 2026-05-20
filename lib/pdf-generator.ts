@@ -420,8 +420,10 @@ function addDeliveryNotePage(
     );
     leftY -= 12;
   } else {
-    text(page, "請求先：お届け先と同じ", MARGIN, leftY, regularFont, 8);
-    leftY -= 12;
+    text(page, "（請求先）", MARGIN, leftY, regularFont, 7);
+    leftY -= 11;
+    text(page, "お届け先と同じ", MARGIN, leftY, regularFont, 7);
+    leftY -= 11;
   }
 
   // 右: 発行者情報（左寄せ）
