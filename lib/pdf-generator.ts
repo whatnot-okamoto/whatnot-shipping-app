@@ -2,7 +2,7 @@
 // pdf-lib + @pdf-lib/fontkit を使用
 // フォント: public/fonts/NotoSansJP-Regular.otf / NotoSansJP-Bold.otf
 
-import { PDFDocument, rgb, type PDFFont, type PDFPage, type PDFImage } from "pdf-lib";
+import { PDFDocument, rgb, StandardFonts, type PDFFont, type PDFPage, type PDFImage } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { readFile } from "fs/promises";
 import path from "path";
@@ -71,6 +71,7 @@ export async function generateShippingDocumentsPdf(
 
   const regularFont = await pdfDoc.embedFont(regularFontBytes, { subset: false });
   const boldFont = await pdfDoc.embedFont(boldFontBytes, { subset: false });
+  const helveticaFont = await pdfDoc.embedStandardFont(StandardFonts.Helvetica);
 
   let logoImage: PDFImage | null = null;
   try {
@@ -82,9 +83,9 @@ export async function generateShippingDocumentsPdf(
   }
 
   for (const { order, orderState } of inputs) {
-    addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont, logoImage);
+    addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
     if (orderState.receipt_required === true) {
-      addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont, logoImage);
+      addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
     }
   }
 
@@ -318,6 +319,7 @@ function addDeliveryNotePage(
   orderState: U1Data,
   regularFont: PDFFont,
   boldFont: PDFFont,
+  helveticaFont: PDFFont,
   logoImage: PDFImage | null
 ): void {
   let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
@@ -376,11 +378,11 @@ function addDeliveryNotePage(
     text(page, truncate(destAddr, leftMaxW, regularFont, 8), MARGIN, leftY, regularFont, 8);
     leftY -= 12;
     if (destTel) {
-      text(page, `TEL: ${destTel}`, MARGIN, leftY, regularFont, 8);
+      text(page, `TEL: ${destTel}`, MARGIN, leftY, helveticaFont, 8);
       leftY -= 12;
     }
     if (!showBilling && order.mail_address) {
-      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, regularFont, 8);
+      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, helveticaFont, 8);
       leftY -= 12;
     }
     leftY -= 8;
@@ -411,11 +413,11 @@ function addDeliveryNotePage(
       leftY -= 10;
     }
     if (order.tel) {
-      text(page, `TEL: ${order.tel}`, MARGIN, leftY, regularFont, 7);
+      text(page, `TEL: ${order.tel}`, MARGIN, leftY, helveticaFont, 7);
       leftY -= 10;
     }
     if (order.mail_address) {
-      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, regularFont, 7);
+      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, helveticaFont, 7);
       leftY -= 10;
     }
     text(
@@ -444,13 +446,13 @@ function addDeliveryNotePage(
   rightY -= 12;
   text(page, truncate(issuer.address, rightMaxW, regularFont, 7), issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.phone, issuerX, rightY, regularFont, 7);
+  text(page, issuer.phone, issuerX, rightY, helveticaFont, 7);
   rightY -= 11;
   text(page, issuer.web, issuerX, rightY, regularFont, 7);
   rightY -= 11;
   text(page, issuer.onlineShop, issuerX, rightY, regularFont, 7);
   rightY -= 11;
-  text(page, issuer.email, issuerX, rightY, regularFont, 7);
+  text(page, issuer.email, issuerX, rightY, helveticaFont, 7);
   rightY -= 11;
   text(page, `登録番号：${issuer.invoiceRegistrationNumber}`, issuerX, rightY, regularFont, 7);
 
@@ -565,6 +567,7 @@ function addReceiptPage(
   orderState: U1Data,
   regularFont: PDFFont,
   boldFont: PDFFont,
+  helveticaFont: PDFFont,
   logoImage: PDFImage | null
 ): void {
   const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
@@ -636,13 +639,13 @@ function addReceiptPage(
   y -= 14;
   text(page, issuer.address, MARGIN, y, regularFont, 9);
   y -= 13;
-  text(page, issuer.phone, MARGIN, y, regularFont, 9);
+  text(page, issuer.phone, MARGIN, y, helveticaFont, 9);
   y -= 13;
   text(page, issuer.web, MARGIN, y, regularFont, 9);
   y -= 13;
   text(page, issuer.onlineShop, MARGIN, y, regularFont, 9);
   y -= 13;
-  text(page, issuer.email, MARGIN, y, regularFont, 9);
+  text(page, issuer.email, MARGIN, y, helveticaFont, 9);
   y -= 13;
   text(
     page,
