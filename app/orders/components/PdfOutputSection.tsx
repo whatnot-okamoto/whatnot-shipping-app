@@ -4,6 +4,26 @@ import { useState } from "react";
 import type { LockedBundleInfo } from "./LockedStageView";
 import ReceiptNameWarningModal from "./ReceiptNameWarningModal";
 
+function extractFilenameFromContentDisposition(header: string | null): string {
+  if (!header) return "whatnot-shipping.pdf";
+
+  const filenameStarMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (filenameStarMatch) {
+    try {
+      return decodeURIComponent(filenameStarMatch[1].trim());
+    } catch {
+      // デコード失敗時は filename にフォールバック
+    }
+  }
+
+  const filenameMatch = header.match(/filename="?([^";]+)"?/i);
+  if (filenameMatch) {
+    return filenameMatch[1].trim();
+  }
+
+  return "whatnot-shipping.pdf";
+}
+
 type Props = {
   pdfOutputDoneFlag: boolean;
   lockedBundles: LockedBundleInfo[];
@@ -46,11 +66,12 @@ export default function PdfOutputSection({
       }
 
       // blobとして受け取りブラウザダウンロードを実行
+      const contentDisposition = res.headers.get("Content-Disposition");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "shipping-documents.pdf";
+      a.download = extractFilenameFromContentDisposition(contentDisposition);
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

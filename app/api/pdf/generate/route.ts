@@ -12,6 +12,25 @@ import { generateShippingDocumentsPdf } from "@/lib/pdf-generator";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
 
+function getJstTimestamp(): string {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+
+  const get = (type: string) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+
+  return `${get("year")}${get("month")}${get("day")}-${get("hour")}${get("minute")}${get("second")}`;
+}
+
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
   if (authError) return authError;
@@ -105,11 +124,18 @@ export async function POST(req: Request) {
     await redis.set(`session:${sessionId}`, JSON.stringify(updatedSession));
 
     // (10) PDFバイナリをレスポンスとして返す
+    const timestamp = getJstTimestamp();
+    const filenameAscii = `whatnot-shipping-${timestamp}.pdf`;
+    const filenameJa = `BASE納品書_${timestamp}.pdf`;
+    const filenameEncoded = encodeURIComponent(filenameJa);
+    const contentDisposition =
+      `attachment; filename="${filenameAscii}"; filename*=UTF-8''${filenameEncoded}`;
+
     return new Response(Buffer.from(pdfBytes), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="shipping-documents-${sessionId}.pdf"`,
+        "Content-Disposition": contentDisposition,
       },
     });
   } catch (error) {
