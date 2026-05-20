@@ -6,7 +6,7 @@ import { PDFDocument, rgb, type PDFFont, type PDFPage, type PDFImage } from "pdf
 import fontkit from "@pdf-lib/fontkit";
 import { readFile } from "fs/promises";
 import path from "path";
-import type { BaseOrder } from "./base-api";
+import type { BaseOrder, BaseOrderReceiver } from "./base-api";
 import type { U1Data } from "./order-store";
 import { PDF_CONFIG, PAYMENT_LABELS, LOGO_SIZE_PT } from "./pdf-config";
 
@@ -100,40 +100,61 @@ export async function generateShippingDocumentsPdf(
 // フィールド単位の混在禁止（注文単位で判定）。
 // ============================================================================
 
+function normalizeField(val: string | null | undefined): string {
+  return (val ?? "").trim().replace(/　/g, " ");
+}
+
 function resolveRecipient(order: BaseOrder): {
   destination: RecipientInfo;
+  destinationSource: "receiver" | "purchaser";
   showBilling: boolean;
 } {
   const r = order.order_receiver;
   const isValid =
     r !== null &&
+    r !== undefined &&
     (r.last_name.trim() + r.first_name.trim()) !== "" &&
     r.address.trim() !== "";
 
-  if (isValid && r) {
+  if (!isValid || !r) {
     return {
       destination: {
-        lastName: r.last_name,
-        firstName: r.first_name,
-        zipCode: r.zip_code,
-        prefecture: r.prefecture,
-        address: r.address,
-        address2: r.address2,
+        lastName: order.last_name,
+        firstName: order.first_name,
+        zipCode: order.zip_code,
+        prefecture: order.prefecture,
+        address: order.address,
+        address2: order.address2,
       },
-      showBilling: true,
+      destinationSource: "purchaser",
+      showBilling: false,
     };
+  }
+
+  // Step 2: purchaser と order_receiver の7フィールド同一性比較
+  let allSame: boolean;
+  try {
+    const fields = ["last_name", "first_name", "zip_code", "prefecture", "address", "address2", "tel"];
+    allSame = fields.every(
+      (f) =>
+        normalizeField(order[f as keyof BaseOrder] as string) ===
+        normalizeField(r[f as keyof BaseOrderReceiver] as string)
+    );
+  } catch {
+    allSame = false; // 比較失敗時は安全側として別送扱い
   }
 
   return {
     destination: {
-      lastName: order.last_name,
-      firstName: order.first_name,
-      zipCode: order.zip_code,
-      prefecture: order.prefecture,
-      address: order.address,
-      address2: order.address2,
+      lastName: r.last_name,
+      firstName: r.first_name,
+      zipCode: r.zip_code,
+      prefecture: r.prefecture,
+      address: r.address,
+      address2: r.address2,
     },
-    showBilling: false,
+    destinationSource: "receiver",
+    showBilling: !allSame,
   };
 }
 
@@ -300,8 +321,10 @@ function addDeliveryNotePage(
   logoImage: PDFImage | null
 ): void {
   let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
-  const { destination, showBilling } = resolveRecipient(order);
-  const destTel = showBilling ? (order.order_receiver?.tel ?? "") : (order.tel ?? "");
+  const { destination, destinationSource, showBilling } = resolveRecipient(order);
+  const destTel = destinationSource === "receiver"
+    ? (order.order_receiver?.tel ?? "")
+    : (order.tel ?? "");
   const issuer = PDF_CONFIG.issuer;
 
   const titleText = "納　品　書";
