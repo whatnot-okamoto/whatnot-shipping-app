@@ -379,6 +379,10 @@ function addDeliveryNotePage(
       text(page, `TEL: ${destTel}`, MARGIN, leftY, regularFont, 8);
       leftY -= 12;
     }
+    if (!showBilling && order.mail_address) {
+      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, regularFont, 8);
+      leftY -= 12;
+    }
     leftY -= 8;
   }
   text(
@@ -408,6 +412,10 @@ function addDeliveryNotePage(
     }
     if (order.tel) {
       text(page, `TEL: ${order.tel}`, MARGIN, leftY, regularFont, 7);
+      leftY -= 10;
+    }
+    if (order.mail_address) {
+      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, regularFont, 7);
       leftY -= 10;
     }
     text(

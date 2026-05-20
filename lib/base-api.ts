@@ -106,6 +106,7 @@ export type BaseOrder = {
   address2: string;
   tel: string;
   remark: string;
+  mail_address?: string;
   modified: number;
   terminated: boolean;
   order_receiver: BaseOrderReceiver | null;
