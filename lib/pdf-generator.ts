@@ -40,6 +40,38 @@ export type PdfOrderInput = {
   orderState: U1Data;
 };
 
+export type TaxRateCheckResult =
+  | { ok: true }
+  | { ok: false; reason: "has8percent" | "hasUnknown" };
+
+// ============================================================================
+// PDF-AMOUNT-01 商品税率チェック
+//
+// 全注文の order_items を走査し、以下の順で判定する。
+//   1. 8%商品（consumption_tax_rate === 8）が1件でも存在 → has8percent
+//   2. 税率不明（null / undefined / 10 でも 8 でもない値）が1件でも存在 → hasUnknown
+//   3. 上記いずれにも該当しない（全商品10%） → ok: true
+// PDF出力可否を判断するための事前チェックであり、集計・表示は呼び出し側で実施する。
+// ============================================================================
+
+export function checkTaxRates(orders: BaseOrder[]): TaxRateCheckResult {
+  for (const order of orders) {
+    for (const item of order.order_items) {
+      if (item.consumption_tax_rate === 8) {
+        return { ok: false, reason: "has8percent" };
+      }
+    }
+  }
+  for (const order of orders) {
+    for (const item of order.order_items) {
+      if (item.consumption_tax_rate !== 10) {
+        return { ok: false, reason: "hasUnknown" };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 // ============================================================================
 // エントリーポイント
 // ============================================================================
@@ -527,8 +559,8 @@ function addDeliveryNotePage(
     y = itemTopY - rowHeight;
   }
 
-  // 合計欄 収まり判定
-  if (y - MARGIN < 62) {
+  // 合計欄 収まり判定（PDF-AMOUNT-01: 最大7行＋下マージン）
+  if (y - MARGIN < 120) {
     page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
     y = A4_HEIGHT - MARGIN;
     y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
@@ -538,19 +570,55 @@ function addDeliveryNotePage(
   hline(page, MARGIN, y, CONTENT_WIDTH, 0.3);
   y -= 12;
 
+  // 商品小計（明細の price × amount の総和）
+  const itemsSubtotal = order.order_items.reduce(
+    (acc, it) => acc + it.price * it.amount,
+    0
+  );
+  textRight(page, "商品小計", col3R, y, regularFont, 8);
+  textRight(page, formatYen(itemsSubtotal), col4R, y, regularFont, 8);
+  y -= 12;
+
   // 送料（shipping_lines[0].shipping_fee を使用。複数の場合は先頭のみ）
   const shippingFee =
     order.shipping_lines.length >= 1 ? order.shipping_lines[0].shipping_fee : 0;
   textRight(page, "送料", col3R, y, regularFont, 8);
   textRight(page, formatYen(shippingFee), col4R, y, regularFont, 8);
-  y -= 4;
+  y -= 12;
+
+  // 代引手数料（cod_fee > 0 の場合のみ表示）
+  const codFee = order.cod_fee ?? 0;
+  if (codFee > 0) {
+    textRight(page, "代引手数料", col3R, y, regularFont, 8);
+    textRight(page, formatYen(codFee), col4R, y, regularFont, 8);
+    y -= 12;
+  }
+
+  y -= 2;
   hline(page, col3R - 25, y, col4R - col3R + 25, 0.3);
   y -= 12;
 
-  // 合計金額
-  textRight(page, "合計金額", col3R, y, boldFont, 9);
+  // 合計（税込）— total フィールドをそのまま表示
+  textRight(page, "合計（税込）", col3R, y, boldFont, 9);
   textRight(page, formatYen(order.total), col4R, y, boldFont, 9);
   y -= 14;
+
+  // 全商品10%が確認できた場合のみ：10%対象商品合計／うち消費税等
+  const taxResult = checkTaxRates([order]);
+  if (taxResult.ok) {
+    const items10Subtotal = order.order_items
+      .filter((it) => it.consumption_tax_rate === 10)
+      .reduce((acc, it) => acc + it.price * it.amount, 0);
+    const taxIncluded10 = Math.round((items10Subtotal * 10) / 110);
+
+    textRight(page, "10%対象商品合計", col3R, y, regularFont, 8);
+    textRight(page, formatYen(items10Subtotal), col4R, y, regularFont, 8);
+    y -= 12;
+
+    textRight(page, "うち消費税等", col3R, y, regularFont, 8);
+    textRight(page, formatYen(taxIncluded10), col4R, y, regularFont, 8);
+    y -= 12;
+  }
 
   // 決済方法
   const paymentLabel = PAYMENT_LABELS[order.payment] ?? order.payment;
@@ -604,13 +672,65 @@ function addReceiptPage(
     ? `${orderState.receipt_name}　様`
     : "　　　様";
   text(page, recipientName, MARGIN, y, boldFont, 14);
-  y -= 40;
+  y -= 32;
 
-  // --- 金額（大きく表示）---
+  // --- 金額欄（PDF-AMOUNT-01: 内訳→区切り→合計（税込）→税率行）---
+  const amtBoxRight = MARGIN + CONTENT_WIDTH * 0.55;
   hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.5);
-  y -= 16;
-  text(page, formatYen(order.total), MARGIN, y, boldFont, 20);
-  y -= 28;
+  y -= 14;
+
+  // 商品小計
+  const itemsSubtotal = order.order_items.reduce(
+    (acc, it) => acc + it.price * it.amount,
+    0
+  );
+  text(page, "商品小計", MARGIN, y, regularFont, 10);
+  textRight(page, formatYen(itemsSubtotal), amtBoxRight, y, regularFont, 10);
+  y -= 14;
+
+  // 送料
+  const shippingFee =
+    order.shipping_lines.length >= 1 ? order.shipping_lines[0].shipping_fee : 0;
+  text(page, "送料", MARGIN, y, regularFont, 10);
+  textRight(page, formatYen(shippingFee), amtBoxRight, y, regularFont, 10);
+  y -= 14;
+
+  // 代引手数料（cod_fee > 0 のみ）
+  const codFee = order.cod_fee ?? 0;
+  if (codFee > 0) {
+    text(page, "代引手数料", MARGIN, y, regularFont, 10);
+    textRight(page, formatYen(codFee), amtBoxRight, y, regularFont, 10);
+    y -= 14;
+  }
+
+  // 区切り線
+  y -= 2;
+  hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.3);
+  y -= 18;
+
+  // 合計（税込）— total フィールドをそのまま表示。領収書の強調として大きく描画
+  text(page, "合計（税込）", MARGIN, y, boldFont, 11);
+  textRight(page, formatYen(order.total), amtBoxRight, y, boldFont, 18);
+  y -= 22;
+
+  // 全商品10%が確認できた場合のみ：10%対象商品合計／うち消費税等
+  const taxResult = checkTaxRates([order]);
+  if (taxResult.ok) {
+    const items10Subtotal = order.order_items
+      .filter((it) => it.consumption_tax_rate === 10)
+      .reduce((acc, it) => acc + it.price * it.amount, 0);
+    const taxIncluded10 = Math.round((items10Subtotal * 10) / 110);
+
+    text(page, "10%対象商品合計", MARGIN, y, regularFont, 9);
+    textRight(page, formatYen(items10Subtotal), amtBoxRight, y, regularFont, 9);
+    y -= 13;
+
+    text(page, "うち消費税等", MARGIN, y, regularFont, 9);
+    textRight(page, formatYen(taxIncluded10), amtBoxRight, y, regularFont, 9);
+    y -= 13;
+  }
+
+  y -= 4;
   hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.5);
   y -= 20;
 

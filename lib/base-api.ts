@@ -48,6 +48,7 @@ export type BaseOrderItem = {
   amount: number;
   price: number;
   status: string;             // "ordered" / "cancelled" など
+  consumption_tax_rate?: number | null;  // 消費税率（10 / 8）。PDF-AMOUNT-01 税率別集計に使用
 };
 
 /**
@@ -97,6 +98,7 @@ export type BaseOrder = {
   payment: string;
   shipping_method: null;      // 常にnull。使用禁止。shipping_lines を参照すること
   shipping_fee: number;       // 存在するがcanonicalではない。shipping_lines[].shipping_fee を使うこと
+  cod_fee?: number;           // 代引手数料。PDF-AMOUNT-01 金額欄に使用（0または未設定時は非表示）
   total: number;              // 注文合計金額（total_price は存在しない）
   first_name: string;         // 購入者（名）
   last_name: string;          // 購入者（姓）

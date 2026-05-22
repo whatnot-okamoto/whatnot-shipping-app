@@ -8,9 +8,13 @@ import { requireAuth } from "@/lib/auth";
 import { redis } from "@/lib/upstash";
 import { fetchOrderDetail } from "@/lib/base-api";
 import { getBundleStates, getOrderStates } from "@/lib/order-store";
-import { generateShippingDocumentsPdf } from "@/lib/pdf-generator";
+import { checkTaxRates, generateShippingDocumentsPdf } from "@/lib/pdf-generator";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
+const ERROR_TAX_8PERCENT =
+  "8%対象商品が含まれているため、PDF出力を停止しました。税率別集計の確認が必要です。担当者に連絡してください。";
+const ERROR_TAX_UNKNOWN =
+  "税率情報が取得できない商品が含まれているため、PDF出力を停止しました。商品データの確認が必要です。担当者に連絡してください。";
 
 function getJstTimestamp(): string {
   const now = new Date();
@@ -97,6 +101,16 @@ export async function POST(req: Request) {
     for (const uk of allUniqueKeys) {
       const order = await fetchOrderDetail(uk);
       orders.push(order);
+    }
+
+    // (4-b) PDF-AMOUNT-01 商品税率チェック
+    //   - 8%商品 / 税率不明商品が含まれる場合はPDF出力を停止し HTTP 422 を返す
+    //   - pdf_output_done_flag は変更しない
+    const taxCheck = checkTaxRates(orders);
+    if (!taxCheck.ok) {
+      const errorMessage =
+        taxCheck.reason === "has8percent" ? ERROR_TAX_8PERCENT : ERROR_TAX_UNKNOWN;
+      return NextResponse.json({ error: errorMessage }, { status: 422 });
     }
 
     // (5) U1データ取得（receipt設定・carrier）
