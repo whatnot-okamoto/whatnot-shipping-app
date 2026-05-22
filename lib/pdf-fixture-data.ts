@@ -500,7 +500,7 @@ export const FIXTURE_DATA: Record<FixturePattern, FixtureEntry> = {
     order: orderF08,
     orderState: makeOrderState("FIXTURE-F08-TEST", {
       receipt_required: true,
-      receipt_name: "テスト八郎　様",
+      receipt_name: "テスト八郎",
       receipt_note: "テスト商品代として",
     }),
   },
