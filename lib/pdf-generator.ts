@@ -300,6 +300,23 @@ function wrapText(
   return lines;
 }
 
+// wrapText() の結果を maxLines 行以内に制限する。
+// maxLines を超える場合は先頭 (maxLines-1) 行をそのまま保持し、
+// それ以降の文字列を結合して truncate() で maxLines 行目を生成する。
+function limitWrappedLines(
+  lines: string[],
+  maxLines: number,
+  maxWidth: number,
+  font: PDFFont,
+  fontSize: number
+): string[] {
+  if (lines.length <= maxLines) return lines;
+  const result = lines.slice(0, maxLines - 1);
+  const remainder = lines.slice(maxLines - 1).join("");
+  result.push(truncate(remainder, maxWidth, font, fontSize));
+  return result;
+}
+
 function formatDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
@@ -407,8 +424,17 @@ function addDeliveryNotePage(
   }
   const destAddr = formatAddress(destination);
   if (destAddr) {
-    text(page, truncate(destAddr, leftMaxW, regularFont, 8), MARGIN, leftY, regularFont, 8);
-    leftY -= 12;
+    const destAddrLines = limitWrappedLines(
+      wrapText(destAddr, leftMaxW, regularFont, 8),
+      3,
+      leftMaxW,
+      regularFont,
+      8
+    );
+    for (const line of destAddrLines) {
+      text(page, line, MARGIN, leftY, regularFont, 8);
+      leftY -= 12;
+    }
     if (destTel) {
       text(page, `TEL: ${destTel}`, MARGIN, leftY, helveticaFont, 8);
       leftY -= 12;
@@ -434,15 +460,17 @@ function addDeliveryNotePage(
     leftY -= 11;
     const billingAddr = formatPurchaserAddress(order);
     if (billingAddr) {
-      text(
-        page,
-        truncate(billingAddr, leftMaxW, regularFont, 7),
-        MARGIN,
-        leftY,
+      const billingAddrLines = limitWrappedLines(
+        wrapText(billingAddr, leftMaxW, regularFont, 7),
+        3,
+        leftMaxW,
         regularFont,
         7
       );
-      leftY -= 10;
+      for (const line of billingAddrLines) {
+        text(page, line, MARGIN, leftY, regularFont, 7);
+        leftY -= 10;
+      }
     }
     if (order.tel) {
       text(page, `TEL: ${order.tel}`, MARGIN, leftY, helveticaFont, 7);
