@@ -454,6 +454,7 @@ function addDeliveryNotePage(
   }
 
   if (showBilling) {
+    leftY -= 6;
     text(page, "（請求先）", MARGIN, leftY, regularFont, 7);
     leftY -= 11;
     text(
