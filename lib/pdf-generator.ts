@@ -417,7 +417,15 @@ function addDeliveryNotePage(
   // 左: お届け先
   text(page, "お届け先", MARGIN, leftY, boldFont, 8);
   leftY -= 14;
-
+  text(
+    page,
+    `${destination.lastName} ${destination.firstName}　様`,
+    MARGIN,
+    leftY,
+    boldFont,
+    10
+  );
+  leftY -= 16;
   if (destination.zipCode) {
     text(page, `〒${destination.zipCode}`, MARGIN, leftY, regularFont, 8);
     leftY -= 12;
@@ -443,21 +451,24 @@ function addDeliveryNotePage(
       text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, helveticaFont, 8);
       leftY -= 12;
     }
-    leftY -= 8;
   }
-  text(
-    page,
-    `${destination.lastName} ${destination.firstName}　様`,
-    MARGIN,
-    leftY,
-    boldFont,
-    10
-  );
-  leftY -= 20;
 
   if (showBilling) {
     text(page, "（請求先）", MARGIN, leftY, regularFont, 7);
     leftY -= 11;
+    text(
+      page,
+      `${order.last_name} ${order.first_name} 様`,
+      MARGIN,
+      leftY,
+      regularFont,
+      7
+    );
+    leftY -= 13;
+    if (order.zip_code) {
+      text(page, `〒${order.zip_code}`, MARGIN, leftY, regularFont, 7);
+      leftY -= 10;
+    }
     const billingAddr = formatPurchaserAddress(order);
     if (billingAddr) {
       const billingAddrLines = limitWrappedLines(
@@ -471,24 +482,15 @@ function addDeliveryNotePage(
         text(page, line, MARGIN, leftY, regularFont, 7);
         leftY -= 10;
       }
+      if (order.tel) {
+        text(page, `TEL: ${order.tel}`, MARGIN, leftY, helveticaFont, 7);
+        leftY -= 10;
+      }
+      if (order.mail_address) {
+        text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, helveticaFont, 7);
+        leftY -= 10;
+      }
     }
-    if (order.tel) {
-      text(page, `TEL: ${order.tel}`, MARGIN, leftY, helveticaFont, 7);
-      leftY -= 10;
-    }
-    if (order.mail_address) {
-      text(page, `Mail: ${order.mail_address}`, MARGIN, leftY, helveticaFont, 7);
-      leftY -= 10;
-    }
-    text(
-      page,
-      `${order.last_name} ${order.first_name} 様`,
-      MARGIN,
-      leftY,
-      regularFont,
-      7
-    );
-    leftY -= 12;
   } else {
     text(page, "（請求先）", MARGIN, leftY, regularFont, 7);
     leftY -= 11;
