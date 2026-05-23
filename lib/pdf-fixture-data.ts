@@ -15,7 +15,8 @@ export type FixturePattern =
   | "F-06"
   | "F-07"
   | "F-08"
-  | "F-09";
+  | "F-09"
+  | "F-10";
 
 export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-01",
@@ -27,6 +28,7 @@ export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-07",
   "F-08",
   "F-09",
+  "F-10",
 ];
 
 export const FIXTURE_LABELS: Record<FixturePattern, string> = {
@@ -39,6 +41,7 @@ export const FIXTURE_LABELS: Record<FixturePattern, string> = {
   "F-07": "F-07: 長いお届け先住所（3行折り返し）",
   "F-08": "F-08: 納品書複数ページ＋領収書あり",
   "F-09": "F-09: 領収書あり（宛名空欄）",
+  "F-10": "F-10: 別送注文＋領収書あり（宛名あり）",
 };
 
 // ============================================================================
@@ -458,6 +461,62 @@ const orderF08: BaseOrder = {
 };
 
 // ============================================================================
+// F-10: 別送注文＋領収書あり（宛名あり）
+// showBilling=true（purchaser と receiver の7フィールドが全て異なる）
+// receipt_required=true, receipt_name="テスト注文主"（「様」なし）
+// PDF-RECEIPT-BILLING-SAMA-01 確認用
+// ============================================================================
+const orderF10: BaseOrder = {
+  unique_key: "FIXTURE-F10-TEST",
+  ordered: 1748000900,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "paypay",
+  shipping_method: null,
+  shipping_fee: 770,
+  cod_fee: 0,
+  total: 6050,
+  last_name: "テスト購入者",
+  first_name: "太郎",
+  zip_code: "650-0001",
+  prefecture: "兵庫県",
+  address: "神戸市中央区サンプル町1-1",
+  address2: "購入者ビル101",
+  tel: "090-0000-1111",
+  mail_address: "purchaser@example.com",
+  remark: "",
+  modified: 1748000900,
+  terminated: false,
+  order_receiver: {
+    last_name: "テスト受取人",
+    first_name: "花子",
+    zip_code: "530-0001",
+    prefecture: "大阪府",
+    address: "大阪市北区サンプル2-2",
+    address2: "受取人マンション202",
+    tel: "080-0000-2222",
+    country: "Japan",
+    country_code: "JP",
+  },
+  order_items: [
+    makeItem(101, "テスト商品A（F-10別送＋領収書確認用）", 3300, 1, {
+      barcode: "4900000000101",
+    }),
+    makeItem(102, "テスト商品B（F-10別送＋領収書確認用）", 1980, 1, {
+      barcode: "4900000000102",
+    }),
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["101", "102"],
+      shipping_method: "宅急便",
+      shipping_fee: 770,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -513,6 +572,14 @@ export const FIXTURE_DATA: Record<FixturePattern, FixtureEntry> = {
       receipt_required: true,
       receipt_name: "",
       receipt_note: "テスト商品代として",
+    }),
+  },
+  "F-10": {
+    order: orderF10,
+    orderState: makeOrderState("FIXTURE-F10-TEST", {
+      receipt_required: true,
+      receipt_name: "テスト注文主",
+      receipt_note: "",
     }),
   },
 };
