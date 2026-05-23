@@ -782,31 +782,30 @@ function addReceiptPage(
   // --- 発行日（PDF出力日）---
   const today = new Date().toISOString().slice(0, 10);
   text(page, `発行日：${today}`, MARGIN, y, regularFont, 10);
-  y -= 30;
 
-  // --- 発行者情報 ---
-  hline(page, MARGIN, y, CONTENT_WIDTH, 0.8);
-  y -= 16;
+  // --- 発行者情報（右カラム固定配置: X = MARGIN + CONTENT_WIDTH × 0.58、Y = 宛名行と同高さ）---
+  const issuerX = MARGIN + CONTENT_WIDTH * 0.58;
+  let iy = hlineY - 20;
 
-  text(page, issuer.storeName, MARGIN, y, boldFont, 11);
-  y -= 16;
-  text(page, issuer.companyLabel, MARGIN, y, regularFont, 10);
-  y -= 14;
-  text(page, issuer.address, MARGIN, y, regularFont, 9);
-  y -= 13;
-  text(page, issuer.phone, MARGIN, y, helveticaFont, 9);
-  y -= 13;
-  text(page, issuer.web, MARGIN, y, regularFont, 9);
-  y -= 13;
-  text(page, issuer.onlineShop, MARGIN, y, regularFont, 9);
-  y -= 13;
-  text(page, issuer.email, MARGIN, y, helveticaFont, 9);
-  y -= 13;
+  text(page, issuer.storeName, issuerX, iy, boldFont, 11);
+  iy -= 16;
+  text(page, issuer.companyLabel, issuerX, iy, regularFont, 10);
+  iy -= 14;
+  text(page, issuer.address, issuerX, iy, regularFont, 9);
+  iy -= 13;
+  text(page, issuer.phone, issuerX, iy, helveticaFont, 9);
+  iy -= 13;
+  text(page, issuer.web, issuerX, iy, regularFont, 9);
+  iy -= 13;
+  text(page, issuer.onlineShop, issuerX, iy, regularFont, 9);
+  iy -= 13;
+  text(page, issuer.email, issuerX, iy, helveticaFont, 9);
+  iy -= 13;
   text(
     page,
     `登録番号：${issuer.invoiceRegistrationNumber}`,
-    MARGIN,
-    y,
+    issuerX,
+    iy,
     regularFont,
     9
   );
