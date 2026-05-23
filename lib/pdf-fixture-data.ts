@@ -14,7 +14,8 @@ export type FixturePattern =
   | "F-05"
   | "F-06"
   | "F-07"
-  | "F-08";
+  | "F-08"
+  | "F-09";
 
 export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-01",
@@ -25,6 +26,7 @@ export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-06",
   "F-07",
   "F-08",
+  "F-09",
 ];
 
 export const FIXTURE_LABELS: Record<FixturePattern, string> = {
@@ -36,6 +38,7 @@ export const FIXTURE_LABELS: Record<FixturePattern, string> = {
   "F-06": "F-06: 長い商品名（100文字超）",
   "F-07": "F-07: 長いお届け先住所（3行折り返し）",
   "F-08": "F-08: 納品書複数ページ＋領収書あり",
+  "F-09": "F-09: 領収書あり（宛名空欄）",
 };
 
 // ============================================================================
@@ -501,6 +504,14 @@ export const FIXTURE_DATA: Record<FixturePattern, FixtureEntry> = {
     orderState: makeOrderState("FIXTURE-F08-TEST", {
       receipt_required: true,
       receipt_name: "テスト八郎",
+      receipt_note: "テスト商品代として",
+    }),
+  },
+  "F-09": {
+    order: orderF04,
+    orderState: makeOrderState("FIXTURE-F04-TEST", {
+      receipt_required: true,
+      receipt_name: "",
       receipt_note: "テスト商品代として",
     }),
   },

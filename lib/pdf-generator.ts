@@ -698,11 +698,14 @@ function addReceiptPage(
 
   let y = hlineY - 20;
 
-  // --- 宛名（空欄時は「　様」）---
-  const recipientName = orderState.receipt_name
-    ? `${orderState.receipt_name}　様`
-    : "　　　様";
-  text(page, recipientName, MARGIN, y, boldFont, 14);
+  // --- 宛名（空欄時は「様」を右端固定・アンダーライン描画）---
+  const nameAreaRight = MARGIN + CONTENT_WIDTH * 0.55;
+  if (orderState.receipt_name) {
+    text(page, `${orderState.receipt_name}　様`, MARGIN, y, boldFont, 14);
+  } else {
+    textRight(page, "様", nameAreaRight, y, boldFont, 14);
+    hline(page, MARGIN, y - 4, CONTENT_WIDTH * 0.55, 0.5);
+  }
   y -= 32;
 
   // --- 金額欄（PDF-AMOUNT-01: 内訳→区切り→合計（税込）→税率行）---
