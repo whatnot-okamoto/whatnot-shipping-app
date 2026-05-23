@@ -318,7 +318,7 @@ function limitWrappedLines(
 }
 
 function formatDate(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+  return new Date(unixSeconds * 1000 + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 function formatYen(amount: number): string {
@@ -677,7 +677,7 @@ function addReceiptPage(
   const logoGap = 40;
   let hlineY: number;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatDate(order.ordered);
 
   if (logoImage) {
     const logoBottomY = A4_HEIGHT - 15 - LOGO_SIZE_PT;
