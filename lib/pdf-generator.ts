@@ -677,6 +677,8 @@ function addReceiptPage(
   const logoGap = 40;
   let hlineY: number;
 
+  const today = new Date().toISOString().slice(0, 10);
+
   if (logoImage) {
     const logoBottomY = A4_HEIGHT - 15 - LOGO_SIZE_PT;
     page.drawImage(logoImage, {
@@ -687,10 +689,14 @@ function addReceiptPage(
     });
     const titleY = Math.round(logoBottomY + (LOGO_SIZE_PT - titleSize * 0.72) / 2);
     text(page, titleText, MARGIN + LOGO_SIZE_PT + logoGap, titleY, boldFont, titleSize);
+    textRight(page, `注文ID: ${order.unique_key}`, RIGHT_EDGE, titleY, regularFont, 8);
+    textRight(page, `発行日: ${today}`, RIGHT_EDGE, titleY - 13, regularFont, 8);
     hlineY = logoBottomY - 8;
   } else {
     const titleW = boldFont.widthOfTextAtSize(titleText, titleSize);
     text(page, titleText, (A4_WIDTH - titleW) / 2, 800, boldFont, titleSize);
+    textRight(page, `注文ID: ${order.unique_key}`, RIGHT_EDGE, 800, regularFont, 8);
+    textRight(page, `発行日: ${today}`, RIGHT_EDGE, 787, regularFont, 8);
     hlineY = 782;
   }
 
@@ -739,6 +745,11 @@ function addReceiptPage(
     y -= 13;
   }
 
+  // 決済方法（うち消費税等と同サイズ・領収金額ブロック内末尾）
+  const paymentLabel = PAYMENT_LABELS[order.payment] ?? order.payment;
+  text(page, `決済方法：${paymentLabel}`, MARGIN, y, regularFont, 9);
+  y -= 13;
+
   y -= 4;
   hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.5);
   y -= 20;
@@ -748,18 +759,19 @@ function addReceiptPage(
   text(page, `但し書き：${note}`, MARGIN, y, regularFont, 10);
   y -= 16;
 
-  // --- 決済方法（PAYMENT_LABELSでマッピング）---
-  const paymentLabel = PAYMENT_LABELS[order.payment] ?? order.payment;
-  text(page, `決済方法：${paymentLabel}`, MARGIN, y, regularFont, 10);
+  // --- 上記正に領収いたしました（左カラム最終行）---
+  text(page, "上記正に領収いたしました", MARGIN, y, regularFont, 10);
+  const leftFinalLineY = y;
   y -= 16;
 
-  // --- 発行日（PDF出力日）---
-  const today = new Date().toISOString().slice(0, 10);
-  text(page, `発行日：${today}`, MARGIN, y, regularFont, 10);
-
-  // --- 発行者情報（右カラム固定配置: X = MARGIN + CONTENT_WIDTH × 0.58、Y = 宛名行と同高さ）---
+  // --- 発行者情報（右カラム下寄せ：発行者情報ブロック下端を左カラム最終行に揃える）---
+  // issuerBlockHeight: 発行者情報8行のベースライン間距離。行1→2:16、行2→3:14、以降5回:13、合計95
   const issuerX = MARGIN + CONTENT_WIDTH * 0.58;
-  let iy = hlineY - 20;
+  const issuerBlockHeight = 95;
+  let iy = leftFinalLineY + issuerBlockHeight;
+  if (iy > hlineY - 20) {
+    iy = hlineY - 20;
+  }
 
   text(page, issuer.storeName, issuerX, iy, boldFont, 11);
   iy -= 16;
@@ -775,12 +787,10 @@ function addReceiptPage(
   iy -= 13;
   text(page, issuer.email, issuerX, iy, helveticaFont, 9);
   iy -= 13;
-  text(
-    page,
-    `登録番号：${issuer.invoiceRegistrationNumber}`,
-    issuerX,
-    iy,
-    regularFont,
-    9
-  );
+  text(page, `登録番号：${issuer.invoiceRegistrationNumber}`, issuerX, iy, regularFont, 9);
+  const issuerFinalLineY = iy;
+
+  // --- ページ下部水平罫線（左右カラム最終行の下方を基準）---
+  const footerLineY = Math.min(leftFinalLineY, issuerFinalLineY) - 12;
+  hline(page, MARGIN, footerLineY, CONTENT_WIDTH, 1);
 }
