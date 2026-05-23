@@ -711,12 +711,10 @@ function addReceiptPage(
 
   // --- 金額欄（PDF-AMOUNT-01: 内訳→区切り→合計（税込）→税率行）---
   const amtBoxRight = MARGIN + CONTENT_WIDTH * 0.55;
-  hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.5);
   y -= 14;
 
   // 区切り線
   y -= 2;
-  hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.3);
   y -= 18;
 
   // 領収金額— total フィールドをそのまま表示。領収書の強調として大きく描画
