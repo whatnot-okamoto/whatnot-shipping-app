@@ -702,10 +702,11 @@ function addReceiptPage(
 
   hline(page, MARGIN, hlineY, CONTENT_WIDTH, 1);
 
-  let y = hlineY - 20;
+  let y = hlineY - 35;
 
   // --- 宛名（空欄時は「様」を右端固定・アンダーライン描画）---
   const nameAreaRight = MARGIN + CONTENT_WIDTH * 0.55;
+  const nameLineY = y - 4;
   if (orderState.receipt_name) {
     text(page, `${orderState.receipt_name}　様`, MARGIN, y, boldFont, 14);
     hline(page, MARGIN, y - 4, CONTENT_WIDTH * 0.55, 0.5);
@@ -713,7 +714,7 @@ function addReceiptPage(
     textRight(page, "様", nameAreaRight, y, boldFont, 14);
     hline(page, MARGIN, y - 4, CONTENT_WIDTH * 0.55, 0.5);
   }
-  y -= 32;
+  y -= 10;
 
   // --- 金額欄（PDF-AMOUNT-01: 内訳→区切り→合計（税込）→税率行）---
   const amtBoxRight = MARGIN + CONTENT_WIDTH * 0.55;
@@ -760,34 +761,31 @@ function addReceiptPage(
   y -= 16;
 
   // --- 上記正に領収いたしました（左カラム最終行）---
-  text(page, "上記正に領収いたしました", MARGIN, y, regularFont, 10);
+  textRight(page, "上記正に領収いたしました", MARGIN + CONTENT_WIDTH * 0.55, y, regularFont, 10);
   const leftFinalLineY = y;
   y -= 16;
 
-  // --- 発行者情報（右カラム下寄せ：発行者情報ブロック下端を左カラム最終行に揃える）---
-  // issuerBlockHeight: 発行者情報8行のベースライン間距離。行1→2:16、行2→3:14、以降5回:13、合計95
-  const issuerX = MARGIN + CONTENT_WIDTH * 0.58;
-  const issuerBlockHeight = 95;
-  let iy = leftFinalLineY + issuerBlockHeight;
-  if (iy > hlineY - 20) {
-    iy = hlineY - 20;
-  }
+  // --- 発行者情報（宛名直下罫線付近から開始）---
+  const issuerOffset = boldFont.widthOfTextAtSize("WHATNOT", 9);
+  const issuerX = MARGIN + CONTENT_WIDTH * 0.52 + issuerOffset;
+  let iy = nameLineY - 10;
+  if (iy > hlineY - 40) { iy = hlineY - 40; }
 
   text(page, issuer.storeName, issuerX, iy, boldFont, 11);
   iy -= 16;
-  text(page, issuer.companyLabel, issuerX, iy, regularFont, 10);
-  iy -= 14;
-  text(page, issuer.address, issuerX, iy, regularFont, 9);
-  iy -= 13;
-  text(page, issuer.phone, issuerX, iy, helveticaFont, 9);
-  iy -= 13;
-  text(page, issuer.web, issuerX, iy, regularFont, 9);
-  iy -= 13;
-  text(page, issuer.onlineShop, issuerX, iy, regularFont, 9);
-  iy -= 13;
-  text(page, issuer.email, issuerX, iy, helveticaFont, 9);
-  iy -= 13;
-  text(page, `登録番号：${issuer.invoiceRegistrationNumber}`, issuerX, iy, regularFont, 9);
+  text(page, issuer.companyLabel, issuerX, iy, regularFont, 8);
+  iy -= 12;
+  text(page, issuer.address, issuerX, iy, regularFont, 7);
+  iy -= 11;
+  text(page, issuer.phone, issuerX, iy, helveticaFont, 7);
+  iy -= 11;
+  text(page, issuer.web, issuerX, iy, regularFont, 7);
+  iy -= 11;
+  text(page, issuer.onlineShop, issuerX, iy, regularFont, 7);
+  iy -= 11;
+  text(page, issuer.email, issuerX, iy, helveticaFont, 7);
+  iy -= 11;
+  text(page, `登録番号：${issuer.invoiceRegistrationNumber}`, issuerX, iy, regularFont, 7);
   const issuerFinalLineY = iy;
 
   // --- ページ下部水平罫線（左右カラム最終行の下方を基準）---
