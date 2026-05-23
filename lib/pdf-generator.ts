@@ -714,37 +714,13 @@ function addReceiptPage(
   hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.5);
   y -= 14;
 
-  // 商品小計
-  const itemsSubtotal = order.order_items.reduce(
-    (acc, it) => acc + it.price * it.amount,
-    0
-  );
-  text(page, "商品小計", MARGIN, y, regularFont, 10);
-  textRight(page, formatYen(itemsSubtotal), amtBoxRight, y, regularFont, 10);
-  y -= 14;
-
-  // 送料
-  const shippingFee =
-    order.shipping_lines.length >= 1 ? order.shipping_lines[0].shipping_fee : 0;
-  text(page, "送料", MARGIN, y, regularFont, 10);
-  textRight(page, formatYen(shippingFee), amtBoxRight, y, regularFont, 10);
-  y -= 14;
-
-  // 代引手数料（cod_fee > 0 のみ）
-  const codFee = order.cod_fee ?? 0;
-  if (codFee > 0) {
-    text(page, "代引手数料", MARGIN, y, regularFont, 10);
-    textRight(page, formatYen(codFee), amtBoxRight, y, regularFont, 10);
-    y -= 14;
-  }
-
   // 区切り線
   y -= 2;
   hline(page, MARGIN, y, CONTENT_WIDTH * 0.55, 0.3);
   y -= 18;
 
-  // 合計（税込）— total フィールドをそのまま表示。領収書の強調として大きく描画
-  text(page, "合計（税込）", MARGIN, y, boldFont, 11);
+  // 領収金額— total フィールドをそのまま表示。領収書の強調として大きく描画
+  text(page, "領収金額", MARGIN, y, boldFont, 11);
   textRight(page, formatYen(order.total), amtBoxRight, y, boldFont, 18);
   y -= 22;
 
