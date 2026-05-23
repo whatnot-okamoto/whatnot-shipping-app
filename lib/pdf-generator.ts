@@ -702,6 +702,7 @@ function addReceiptPage(
   const nameAreaRight = MARGIN + CONTENT_WIDTH * 0.55;
   if (orderState.receipt_name) {
     text(page, `${orderState.receipt_name}　様`, MARGIN, y, boldFont, 14);
+    hline(page, MARGIN, y - 4, CONTENT_WIDTH * 0.55, 0.5);
   } else {
     textRight(page, "様", nameAreaRight, y, boldFont, 14);
     hline(page, MARGIN, y - 4, CONTENT_WIDTH * 0.55, 0.5);
