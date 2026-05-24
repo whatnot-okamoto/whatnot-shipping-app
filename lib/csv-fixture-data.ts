@@ -6,13 +6,17 @@
 import type { BaseOrder } from "@/lib/base-api";
 import type { CsvCarrier, CsvInputUnit } from "@/lib/csv-generator";
 
-export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04";
+export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04" | "CSV-F-05" | "CSV-F-06" | "CSV-F-07" | "CSV-F-08";
 
 export const CSV_FIXTURE_PATTERN_IDS: CsvFixturePattern[] = [
   "CSV-F-01",
   "CSV-F-02",
   "CSV-F-03",
   "CSV-F-04",
+  "CSV-F-05",
+  "CSV-F-06",
+  "CSV-F-07",
+  "CSV-F-08",
 ];
 
 export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
@@ -20,6 +24,10 @@ export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
   "CSV-F-02": "CSV-F-02: ヤマト宅急便通常注文（宅急便・標準住所・1商品）",
   "CSV-F-03": "CSV-F-03: ネコポス通常注文（標準住所・1商品）",
   "CSV-F-04": "CSV-F-04: 佐川別送注文（purchaser≠order_receiver・col.18〜22確認用）",
+  "CSV-F-05": "CSV-F-05: 佐川・実在住所（公共施設）・標準",
+  "CSV-F-06": "CSV-F-06: 佐川・col.7超過（address2長）・停止確認",
+  "CSV-F-07": "CSV-F-07: 佐川・col.6超過（address市区町村長）・停止確認",
+  "CSV-F-08": "CSV-F-08: 佐川・長い品名（P12安全停止発火確認）",
 };
 
 export type CsvFixtureEntry = {
@@ -251,6 +259,213 @@ const orderCsvF04: BaseOrder = {
 };
 
 // ============================================================================
+// CSV-F-05: 佐川・実在住所（公共施設）・標準
+// 住所：兵庫県三木市大村530（岡本さん指定住所。Claude Codeは住所を検索・推測・自選しない）
+// col.5=兵庫県 / col.6=三木市(3文字) / col.7=大村530(3.5文字) ← いずれも16文字以内
+// ============================================================================
+const orderCsvF05: BaseOrder = {
+  unique_key: "TEST_CSV_F05",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 1500,
+  last_name: "テスト",
+  first_name: "五郎",
+  zip_code: "673-0404",
+  prefecture: "兵庫県",
+  address: "三木市大村530",
+  address2: "",
+  tel: "000-0000-0505",
+  mail_address: "test-csv-f05@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    {
+      order_item_id: 10005,
+      item_id: 1000500,
+      variation_id: 0,
+      title: "テストデッキ（CSV-F-05実在住所確認用）",
+      barcode: "4900000010005",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 1500,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10005"],
+      shipping_method: "佐川急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
+// CSV-F-06: 佐川・col.7超過（address2長）・停止確認
+// col.7 = split.street("1番地"=2.5文字) + address2(20文字) = 22.5 > 16 → CsvGeneratorError
+// col.6 = "千代田区" = 4文字（上限内）
+// ============================================================================
+const orderCsvF06: BaseOrder = {
+  unique_key: "TEST_CSV_F06",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 1500,
+  last_name: "テスト",
+  first_name: "六郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "千代田区1番地",
+  address2: "テストテストテストテストマンションテスト",
+  tel: "000-0000-0606",
+  mail_address: "test-csv-f06@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    {
+      order_item_id: 10006,
+      item_id: 1000600,
+      variation_id: 0,
+      title: "テストデッキ（CSV-F-06col7超過確認用）",
+      barcode: "4900000010006",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 1500,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10006"],
+      shipping_method: "佐川急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
+// CSV-F-07: 佐川・col.6超過（address市区町村長）・停止確認
+// address の市区町村部分: "テストテストテストテストテスト超長市" = 18文字 > 16 → CsvGeneratorError
+// col.7 = "1番地" = 2.5文字（上限内）
+// ============================================================================
+const orderCsvF07: BaseOrder = {
+  unique_key: "TEST_CSV_F07",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 1500,
+  last_name: "テスト",
+  first_name: "七郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "テストテストテストテストテスト超長市1番地",
+  address2: "",
+  tel: "000-0000-0707",
+  mail_address: "test-csv-f07@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    {
+      order_item_id: 10007,
+      item_id: 1000700,
+      variation_id: 0,
+      title: "テストデッキ（CSV-F-07col6超過確認用）",
+      barcode: "4900000010007",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 1500,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10007"],
+      shipping_method: "佐川急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
+// CSV-F-08: 佐川・長い品名（P12安全停止発火確認）
+// title: 全角31文字 → buildSagawaProductName の countZenkaku(productName) > 30 でエラー
+// ============================================================================
+const orderCsvF08: BaseOrder = {
+  unique_key: "TEST_CSV_F08",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 1500,
+  last_name: "テスト",
+  first_name: "八郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "千代田区テスト町一丁目二番三号",
+  address2: "",
+  tel: "000-0000-0808",
+  mail_address: "test-csv-f08@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    {
+      order_item_id: 10008,
+      item_id: 1000800,
+      variation_id: 0,
+      title: "テスト超長品名テスト超長品名テスト超長品名テスト超長品名テスト",
+      barcode: "4900000010008",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 1500,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10008"],
+      shipping_method: "佐川急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -259,6 +474,10 @@ export const CSV_FIXTURE_DATA: Record<CsvFixturePattern, CsvFixtureEntry> = {
   "CSV-F-02": { order: orderCsvF02, carrier: "yamato" },
   "CSV-F-03": { order: orderCsvF03, carrier: "nekopos" },
   "CSV-F-04": { order: orderCsvF04, carrier: "sagawa" },
+  "CSV-F-05": { order: orderCsvF05, carrier: "sagawa" },
+  "CSV-F-06": { order: orderCsvF06, carrier: "sagawa" },
+  "CSV-F-07": { order: orderCsvF07, carrier: "sagawa" },
+  "CSV-F-08": { order: orderCsvF08, carrier: "sagawa" },
 };
 
 /** fixture order から CsvInputUnit を生成する（1注文＝1単位）。 */
