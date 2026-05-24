@@ -434,6 +434,35 @@ export function generateYamatoNekoposCsv(
 }
 
 // ============================================================================
+// 別送判定（佐川CSV用）
+// ============================================================================
+
+/** フィールド値を正規化する（null/undefined→空文字、trim、全角スペース→半角スペース）。 */
+function normalizeField(value: string | null | undefined): string {
+  if (value == null) return "";
+  return value.trim().replace(/　/g, " ");
+}
+
+/**
+ * purchaser と order_receiver を7フィールドで比較し、別送注文かどうかを判定する。
+ * order_receiver が null の場合は false（通常注文）。
+ * 1フィールドでも差分があれば true（別送注文）、全一致なら false（通常注文）。
+ */
+function isSeparateDeliveryForCsv(order: BaseOrder): boolean {
+  const r = order.order_receiver;
+  if (r === null) return false;
+  return (
+    normalizeField(order.last_name) !== normalizeField(r.last_name) ||
+    normalizeField(order.first_name) !== normalizeField(r.first_name) ||
+    normalizeField(order.zip_code) !== normalizeField(r.zip_code) ||
+    normalizeField(order.prefecture) !== normalizeField(r.prefecture) ||
+    normalizeField(order.address) !== normalizeField(r.address) ||
+    normalizeField(order.address2) !== normalizeField(r.address2) ||
+    normalizeField(order.tel) !== normalizeField(r.tel)
+  );
+}
+
+// ============================================================================
 // 佐川 CSV生成（e飛伝III・74列）
 // ============================================================================
 
@@ -558,8 +587,8 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
   // col44: クール便指定（固定 "001"）
   row[43] = "001";
 
-  // col.18〜22: ご依頼主欄 — 別送注文（source === "receiver"）のみ出力
-  if (source === "receiver") {
+  // col.18〜22: ご依頼主欄 — 別送注文（purchaser と order_receiver が異なる場合）のみ出力
+  if (isSeparateDeliveryForCsv(rep)) {
     const purchaser = extractRecipient(rep, "purchaser");
 
     // 必須5項目欠損チェック（個人情報の具体値はメッセージに含めない）
