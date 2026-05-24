@@ -501,26 +501,11 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
     );
   }
 
-  // col6: 市区町村（全角16文字上限）
+  // col6: 市区町村（文字数超過時もCSV出力を継続する）
   const col6 = split.city;
-  if (countZenkaku(col6) > 16) {
-    throw new CsvGeneratorError(
-      `佐川CSV（bundle_group_id: ${bundleGroupId}）の市区町村が16文字を超えています` +
-        `（"${col6}"、${countZenkaku(col6)}文字）。`,
-      bundleGroupId
-    );
-  }
 
-  // col7: 番地・建物名（addressStreet の番地部分 + address2, 全角16文字上限）
+  // col7: 番地・建物名（addressStreet の番地部分 + address2, 文字数超過時もCSV出力を継続する）
   const col7 = `${split.street}${r.addressBuilding}`;
-  if (countZenkaku(col7) > 16) {
-    throw new CsvGeneratorError(
-      `佐川CSV（bundle_group_id: ${bundleGroupId}）の番地・建物名が16文字を超えています` +
-        `（"${col7}"、${countZenkaku(col7)}文字）。` +
-        `番地または建物名を短縮してください。`,
-      bundleGroupId
-    );
-  }
 
   // col8: 氏名（全角16文字上限、超過分を col9 へ）
   const fullName = r.fullName;
