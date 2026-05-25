@@ -6,7 +6,7 @@
 import type { BaseOrder } from "@/lib/base-api";
 import type { CsvCarrier, CsvInputUnit } from "@/lib/csv-generator";
 
-export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04" | "CSV-F-05" | "CSV-F-06" | "CSV-F-07" | "CSV-F-08" | "CSV-F-09" | "CSV-F-10";
+export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04" | "CSV-F-05" | "CSV-F-06" | "CSV-F-07" | "CSV-F-08" | "CSV-F-09" | "CSV-F-10" | "CSV-F-11";
 
 export const CSV_FIXTURE_PATTERN_IDS: CsvFixturePattern[] = [
   "CSV-F-01",
@@ -19,6 +19,7 @@ export const CSV_FIXTURE_PATTERN_IDS: CsvFixturePattern[] = [
   "CSV-F-08",
   "CSV-F-09",
   "CSV-F-10",
+  "CSV-F-11",
 ];
 
 export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
@@ -32,6 +33,7 @@ export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
   "CSV-F-08": "CSV-F-08: 佐川・長い品名（P12安全停止発火確認）",
   "CSV-F-09": "CSV-F-09: ヤマト・col.12超過（prefecture+address全角換算33文字）・長住所確認",
   "CSV-F-10": "CSV-F-10: ヤマト・address2あり（col.13出力確認）・通常住所",
+  "CSV-F-11": "CSV-F-11: ヤマト宅急便・実在住所＋長いaddress2（B2 col.13長文字確認）",
 };
 
 export type CsvFixtureEntry = {
@@ -615,6 +617,71 @@ const orderCsvF10: BaseOrder = {
 };
 
 // ============================================================================
+// CSV-F-11: ヤマト宅急便・実在住所＋長いaddress2（B2 col.13長文字確認）
+// 住所：兵庫県三木市大村530（岡本さん指定住所。Claude Codeは住所を検索・推測・自選しない）
+// address2: テストマンション壱番館ロング名称サンプル棟イースト１０１号室（全角30文字）
+// col.12 = prefecture("兵庫県" 3文字) + address("三木市大村530" 7文字) = 10文字 → 32文字以内
+// col.13 = address2（全角30文字） → B2 Cloud上での長文字認識・表示挙動を確認
+// order_receiver はpurchaserと同一（通常注文）
+// ============================================================================
+const orderCsvF11: BaseOrder = {
+  unique_key: "TEST_CSV_F11",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 2200,
+  last_name: "テスト",
+  first_name: "十一郎",
+  zip_code: "673-0404",
+  prefecture: "兵庫県",
+  address: "三木市大村530",
+  address2: "テストマンション壱番館ロング名称サンプル棟イースト１０１号室",
+  tel: "000-0000-1111",
+  mail_address: "test-csv-f11@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: {
+    last_name: "テスト",
+    first_name: "十一郎",
+    zip_code: "673-0404",
+    prefecture: "兵庫県",
+    address: "三木市大村530",
+    address2: "テストマンション壱番館ロング名称サンプル棟イースト１０１号室",
+    tel: "000-0000-1111",
+    country: "",
+    country_code: "",
+  },
+  order_items: [
+    {
+      order_item_id: 10011,
+      item_id: 1001100,
+      variation_id: 0,
+      title: "テストデッキ（CSV-F-11ヤマトaddress2長文字確認用）",
+      barcode: "4900000010011",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 2200,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10011"],
+      shipping_method: "宅急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -629,6 +696,7 @@ export const CSV_FIXTURE_DATA: Record<CsvFixturePattern, CsvFixtureEntry> = {
   "CSV-F-08": { order: orderCsvF08, carrier: "sagawa" },
   "CSV-F-09": { order: orderCsvF09, carrier: "yamato" },
   "CSV-F-10": { order: orderCsvF10, carrier: "yamato" },
+  "CSV-F-11": { order: orderCsvF11, carrier: "yamato" },
 };
 
 /** fixture order から CsvInputUnit を生成する（1注文＝1単位）。 */

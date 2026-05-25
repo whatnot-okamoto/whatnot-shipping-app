@@ -59,7 +59,7 @@ export async function POST(req: Request) {
   if (!CSV_FIXTURE_PATTERN_IDS.includes(patternId as CsvFixturePattern)) {
     return NextResponse.json(
       {
-        error: `不正なパターンIDです。CSV-F-01〜CSV-F-10 のいずれかを指定してください。(受信値: "${patternId}")`,
+        error: `不正なパターンIDです。CSV-F-01〜CSV-F-11 のいずれかを指定してください。(受信値: "${patternId}")`,
       },
       { status: 400 }
     );
