@@ -363,15 +363,8 @@ function buildYamatoRow(
   // B2 Cloud側の取込エラー確認・修正運用に委ねる。切り捨て・自動分割は行わない。
   const col13 = r.addressBuilding;
 
-  // 列16: 氏名（全角16文字上限）
+  // 列16: 氏名
   const col16 = r.fullName;
-  if (countZenkaku(col16) > 16) {
-    throw new CsvGeneratorError(
-      `ヤマトCSV（bundle_group_id: ${bundleGroupId}）のお届け先氏名が16文字を超えています` +
-        `（"${col16}"、${countZenkaku(col16)}文字）。`,
-      bundleGroupId
-    );
-  }
 
   // 42列の行を構築（E-1補正メモ: 38・39列目は空欄）
   const row = new Array<string>(42).fill("");
