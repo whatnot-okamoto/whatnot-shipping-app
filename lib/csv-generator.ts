@@ -252,7 +252,7 @@ function buildCsvBuffer(header: string[], rows: string[][]): Buffer {
  * 佐川 col25 の品名を生成する（品名生成ルール準拠）。
  * 単品（U2内の商品が1種類1点のみ）: 商品名をそのまま出力。
  * 複数商品: 先頭U1の先頭アイテムのtitle + " 他"。
- * 仮置き上限（全角30文字）超過時は CsvGeneratorError をスロー。
+ * 文字数超過時もCSV出力を継続する（e飛伝III側に委ねる）。
  */
 function buildSagawaProductName(
   orders: BaseOrder[],
@@ -267,17 +267,6 @@ function buildSagawaProductName(
   } else {
     const firstItem = orders[0].order_items[0];
     productName = firstItem ? `${firstItem.title} 他` : "（商品情報なし）";
-  }
-
-  const charCount = countZenkaku(productName);
-  const LIMIT = 30;
-  if (charCount > LIMIT) {
-    throw new CsvGeneratorError(
-      `佐川CSV（bundle_group_id: ${bundleGroupId}）の品名が仮上限を超えています` +
-        `（${charCount}文字 / 仮上限${LIMIT}文字）。` +
-        `品名短縮ルールまたはe飛伝IIIの正式上限を確認してください。`,
-      bundleGroupId
-    );
   }
 
   return productName;
