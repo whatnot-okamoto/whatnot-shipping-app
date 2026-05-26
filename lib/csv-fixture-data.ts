@@ -6,7 +6,7 @@
 import type { BaseOrder } from "@/lib/base-api";
 import type { CsvCarrier, CsvInputUnit } from "@/lib/csv-generator";
 
-export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04" | "CSV-F-05" | "CSV-F-06" | "CSV-F-07" | "CSV-F-08" | "CSV-F-09" | "CSV-F-10" | "CSV-F-11";
+export type CsvFixturePattern = "CSV-F-01" | "CSV-F-02" | "CSV-F-03" | "CSV-F-04" | "CSV-F-05" | "CSV-F-06" | "CSV-F-07" | "CSV-F-08" | "CSV-F-09" | "CSV-F-10" | "CSV-F-11" | "CSV-F-12";
 
 export const CSV_FIXTURE_PATTERN_IDS: CsvFixturePattern[] = [
   "CSV-F-01",
@@ -20,6 +20,7 @@ export const CSV_FIXTURE_PATTERN_IDS: CsvFixturePattern[] = [
   "CSV-F-09",
   "CSV-F-10",
   "CSV-F-11",
+  "CSV-F-12",
 ];
 
 export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
@@ -34,6 +35,7 @@ export const CSV_FIXTURE_LABELS: Record<CsvFixturePattern, string> = {
   "CSV-F-09": "CSV-F-09: ヤマト・col.12超過（prefecture+address全角換算33文字）・長住所確認",
   "CSV-F-10": "CSV-F-10: ヤマト・address2あり（col.13出力確認）・通常住所",
   "CSV-F-11": "CSV-F-11: ヤマト宅急便・実在住所＋長いaddress2（B2 col.13長文字確認）",
+  "CSV-F-12": "CSV-F-12: ヤマト宅急便・col.16超過（氏名全角17文字）・CsvGeneratorError確認",
 };
 
 export type CsvFixtureEntry = {
@@ -682,6 +684,70 @@ const orderCsvF11: BaseOrder = {
 };
 
 // ============================================================================
+// CSV-F-12: ヤマト宅急便・col.16超過（氏名全角17文字）・CsvGeneratorError確認
+// fullName = "テストユーザー長い 宛名テスト確認用"（last_name+space+first_name）
+// countZenkaku = 9 + 0.5 + 8 = 17.5 > 16 → CsvGeneratorError 発火
+// 住所・電話・郵便番号等は CSV-F-02 と同一の標準値を使用
+// order_receiver は purchaser と同一内容（通常注文）
+// ============================================================================
+const orderCsvF12: BaseOrder = {
+  unique_key: "TEST_CSV_F12",
+  ordered: FIXTURE_ORDERED,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 0,
+  cod_fee: 0,
+  total: 3300,
+  last_name: "テストユーザー長い",
+  first_name: "宛名テスト確認用",
+  zip_code: "530-0001",
+  prefecture: "大阪府",
+  address: "大阪市北区テスト町二丁目三番四号",
+  address2: "",
+  tel: "000-0000-1212",
+  mail_address: "test-csv-f12@example.com",
+  remark: "",
+  modified: FIXTURE_ORDERED,
+  terminated: false,
+  order_receiver: {
+    last_name: "テストユーザー長い",
+    first_name: "宛名テスト確認用",
+    zip_code: "530-0001",
+    prefecture: "大阪府",
+    address: "大阪市北区テスト町二丁目三番四号",
+    address2: "",
+    tel: "000-0000-1212",
+    country: "",
+    country_code: "",
+  },
+  order_items: [
+    {
+      order_item_id: 10012,
+      item_id: 1001200,
+      variation_id: 0,
+      title: "テストデッキ（CSV-F-12ヤマト氏名超過確認用）",
+      barcode: "4900000010012",
+      variation: "",
+      variation_identifier: "",
+      amount: 1,
+      price: 3300,
+      status: "ordered",
+      consumption_tax_rate: 10,
+    },
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["10012"],
+      shipping_method: "宅急便",
+      shipping_fee: 0,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -697,6 +763,7 @@ export const CSV_FIXTURE_DATA: Record<CsvFixturePattern, CsvFixtureEntry> = {
   "CSV-F-09": { order: orderCsvF09, carrier: "yamato" },
   "CSV-F-10": { order: orderCsvF10, carrier: "yamato" },
   "CSV-F-11": { order: orderCsvF11, carrier: "yamato" },
+  "CSV-F-12": { order: orderCsvF12, carrier: "yamato" },
 };
 
 /** fixture order から CsvInputUnit を生成する（1注文＝1単位）。 */
