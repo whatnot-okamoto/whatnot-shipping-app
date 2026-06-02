@@ -61,7 +61,7 @@ export async function POST(req: Request) {
   if (!FIXTURE_PATTERN_IDS.includes(patternId as FixturePattern)) {
     return NextResponse.json(
       {
-        error: `不正なパターンIDです。F-01〜F-08 のいずれかを指定してください。(受信値: "${patternId}")`,
+        error: `不正なパターンIDです。F-01〜F-13 のいずれかを指定してください。(受信値: "${patternId}")`,
       },
       { status: 400 }
     );

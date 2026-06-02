@@ -16,7 +16,10 @@ export type FixturePattern =
   | "F-07"
   | "F-08"
   | "F-09"
-  | "F-10";
+  | "F-10"
+  | "F-11"
+  | "F-12"
+  | "F-13";
 
 export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-01",
@@ -29,6 +32,9 @@ export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-08",
   "F-09",
   "F-10",
+  "F-11",
+  "F-12",
+  "F-13",
 ];
 
 export const FIXTURE_LABELS: Record<FixturePattern, string> = {
@@ -42,6 +48,9 @@ export const FIXTURE_LABELS: Record<FixturePattern, string> = {
   "F-08": "F-08: 納品書複数ページ＋領収書あり",
   "F-09": "F-09: 領収書あり（宛名空欄）",
   "F-10": "F-10: 別送注文＋領収書あり（宛名あり）",
+  "F-11": "F-11: 別送注文（注文主住所が長い・2〜3行折り返し確認）",
+  "F-12": "F-12: お届け先住所が4行分超・3行制限挙動確認",
+  "F-13": "F-13: 長いバリエーション名・右列縦位置確認",
 };
 
 // ============================================================================
@@ -517,6 +526,156 @@ const orderF10: BaseOrder = {
 };
 
 // ============================================================================
+// F-11: 別送注文・注文主住所が長い（PDF-ADDRESS-TRUNCATE-01 後続）
+// showBilling=true（purchaser と order_receiver が異なる）
+// purchaser の prefecture+address の合計 42文字（全角40文字超）
+// ============================================================================
+const orderF11: BaseOrder = {
+  unique_key: "FIXTURE-F11-TEST",
+  ordered: 1748001000,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 770,
+  cod_fee: 0,
+  total: 4070,
+  last_name: "テスト購入者",
+  first_name: "太郎",
+  zip_code: "399-9301",
+  prefecture: "長野県",
+  address: "北安曇郡白馬村テスト町一丁目二番三号テストビルディング東館テストフロア長住所確認用",
+  address2: "",
+  tel: "000-0000-0011",
+  mail_address: "test11@example.com",
+  remark: "",
+  modified: 1748001000,
+  terminated: false,
+  order_receiver: {
+    last_name: "テスト受取人",
+    first_name: "花子",
+    zip_code: "530-0001",
+    prefecture: "大阪府",
+    address: "大阪市北区テスト町四丁目五番六号",
+    address2: "",
+    tel: "000-0000-0111",
+    country: "Japan",
+    country_code: "JP",
+  },
+  order_items: [
+    makeItem(111, "テスト商品（F-11別送注文主長住所確認用）", 3300, 1, {
+      barcode: "4900000000111",
+    }),
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["111"],
+      shipping_method: "宅急便",
+      shipping_fee: 770,
+    },
+  ],
+};
+
+// ============================================================================
+// F-12: お届け先住所が4行分超・3行制限挙動確認（PDF-ADDRESS-TRUNCATE-01 後続）
+// order_receiver の prefecture+address+address2 合計 119文字（全角115〜120文字範囲内）
+// limitWrappedLines(maxLines=3) による4行目以降の扱いを確認
+// ============================================================================
+const orderF12: BaseOrder = {
+  unique_key: "FIXTURE-F12-TEST",
+  ordered: 1748001100,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 770,
+  cod_fee: 0,
+  total: 3300,
+  last_name: "テスト",
+  first_name: "太郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "千代田区テスト町一丁目二番三号",
+  address2: "",
+  tel: "000-0000-0012",
+  mail_address: "test12@example.com",
+  remark: "",
+  modified: 1748001100,
+  terminated: false,
+  order_receiver: {
+    last_name: "テスト受取人",
+    first_name: "花子",
+    zip_code: "060-0001",
+    prefecture: "北海道",
+    address: "札幌市中央区テスト北一条テスト西二丁目テストビルディング北館テストフロアテスト部テスト区画長住所四行超確認用テスト号室",
+    address2: "テスト担当者宛テスト長住所確認用サンプルデータフィクスチャ四行超折り返し確認テストデータ追加テキストテスト棟テスト",
+    tel: "000-0000-0122",
+    country: "Japan",
+    country_code: "JP",
+  },
+  order_items: [
+    makeItem(121, "テスト商品（F-12お届け先長住所四行超確認用）", 2530, 1, {
+      barcode: "4900000000121",
+    }),
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["121"],
+      shipping_method: "宅急便",
+      shipping_fee: 770,
+    },
+  ],
+};
+
+// ============================================================================
+// F-13: 長いバリエーション名（PDF-LAYOUT-02 再オープン条件）
+// variation フィールドに全角52文字の長文を設定
+// order_items 2種：バリエーションあり1件・バリエーションなし1件
+// ============================================================================
+const orderF13: BaseOrder = {
+  unique_key: "FIXTURE-F13-TEST",
+  ordered: 1748001200,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "creditcard",
+  shipping_method: null,
+  shipping_fee: 770,
+  cod_fee: 0,
+  total: 4950,
+  last_name: "テスト",
+  first_name: "太郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "千代田区テスト町一丁目二番三号",
+  address2: "",
+  tel: "000-0000-0013",
+  mail_address: "test13@example.com",
+  remark: "",
+  modified: 1748001200,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    makeItem(131, "テスト商品Ａ（F-13バリエーション長文確認用）", 2200, 1, {
+      barcode: "4900000000131",
+      variation: "テストバリエーション名長文確認用サイズカラー素材組み合わせパターン検証用長文テストサンプルデータ確認用",
+    }),
+    makeItem(132, "テスト商品Ｂ（F-13バリエーションなし確認用）", 1980, 1, {
+      barcode: "4900000000132",
+    }),
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["131", "132"],
+      shipping_method: "宅急便",
+      shipping_fee: 770,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -581,5 +740,17 @@ export const FIXTURE_DATA: Record<FixturePattern, FixtureEntry> = {
       receipt_name: "テスト注文主",
       receipt_note: "",
     }),
+  },
+  "F-11": {
+    order: orderF11,
+    orderState: makeOrderState("FIXTURE-F11-TEST"),
+  },
+  "F-12": {
+    order: orderF12,
+    orderState: makeOrderState("FIXTURE-F12-TEST"),
+  },
+  "F-13": {
+    order: orderF13,
+    orderState: makeOrderState("FIXTURE-F13-TEST"),
   },
 };
