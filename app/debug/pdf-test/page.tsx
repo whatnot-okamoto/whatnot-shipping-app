@@ -13,6 +13,7 @@ export default function PdfTestPage() {
   const [uniqueKey, setUniqueKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [withReceipt, setWithReceipt] = useState(false);
 
   // ページ表示時に認証状態を確認し、未認証ならログインページへリダイレクト
   useEffect(() => {
@@ -44,7 +45,7 @@ export default function PdfTestPage() {
       const res = await fetch("/api/debug/pdf-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unique_key: uniqueKey.trim() }),
+        body: JSON.stringify({ unique_key: uniqueKey.trim(), withReceipt }),
       });
 
       if (res.status === 401) {
@@ -121,6 +122,29 @@ export default function PdfTestPage() {
             className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             disabled={loading}
           />
+        </div>
+
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={withReceipt}
+              onChange={(e) => setWithReceipt(e.target.checked)}
+              disabled={loading}
+              className="w-4 h-4"
+            />
+            <span className="text-sm font-medium text-gray-700">
+              領収書セクションを含める（検証専用）
+            </span>
+          </label>
+          <p className="text-xs text-gray-500 ml-6">
+            検証専用です。正式な領収書再発行ではありません。
+          </p>
+          {withReceipt && (
+            <div className="ml-6 p-2 bg-orange-50 border border-orange-300 rounded text-xs text-orange-800">
+              領収書セクション込み・検証専用・正式な領収書再発行ではありません
+            </div>
+          )}
         </div>
 
         {error && (

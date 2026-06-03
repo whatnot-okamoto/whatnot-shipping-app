@@ -41,9 +41,11 @@ export async function POST(req: Request) {
 
   // (2) リクエストボディから unique_key を取得
   let uniqueKey: string;
+  let withReceipt: boolean;
   try {
-    const body = (await req.json()) as { unique_key?: string };
+    const body = (await req.json()) as { unique_key?: string; withReceipt?: boolean };
     uniqueKey = (body.unique_key ?? "").trim();
+    withReceipt = body.withReceipt === true;
   } catch {
     return NextResponse.json(
       { error: "リクエストの解析に失敗しました。" },
@@ -73,12 +75,14 @@ export async function POST(req: Request) {
     }
 
     // (5) 検証用デフォルト U1Data（Upstash 不使用・フラグ更新なし）
+    // withReceipt===true の場合のみ receipt_required を in-memory で true に付与する。
+    // Upstash KV・BASE API・キャッシュへの書き込みは一切行わない。
     const orderState: U1Data = {
       unique_key: order.unique_key,
       hold_flag: false,
       hold_reason: "",
       carrier: "",
-      receipt_required: false,
+      receipt_required: withReceipt,
       receipt_name: "",
       receipt_note: "",
       app_memo: "",
@@ -91,8 +95,12 @@ export async function POST(req: Request) {
     // (7) PDF バイナリをレスポンスとして返す
     const timestamp = getJstTimestamp();
     const uniqueKeySuffix = uniqueKey.slice(-8);
-    const filenameJa = `TEST_BASE納品書_${uniqueKeySuffix}_${timestamp}.pdf`;
-    const filenameAscii = `TEST_BASE_delivery_${uniqueKeySuffix}_${timestamp}.pdf`;
+    const filenameJa = withReceipt
+      ? `TEST_BASE納品書領収書_${uniqueKeySuffix}_${timestamp}.pdf`
+      : `TEST_BASE納品書_${uniqueKeySuffix}_${timestamp}.pdf`;
+    const filenameAscii = withReceipt
+      ? `TEST_BASE_delivery_receipt_${uniqueKeySuffix}_${timestamp}.pdf`
+      : `TEST_BASE_delivery_${uniqueKeySuffix}_${timestamp}.pdf`;
     const filenameEncoded = encodeURIComponent(filenameJa);
     const contentDisposition =
       `attachment; filename="${filenameAscii}"; filename*=UTF-8''${filenameEncoded}`;
