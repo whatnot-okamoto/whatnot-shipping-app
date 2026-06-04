@@ -10,12 +10,18 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FIXTURE_PATTERN_IDS, FIXTURE_LABELS, type FixturePattern } from "@/lib/pdf-fixture-data";
 
+type PaymentLabelWarning = {
+  values: string[];        // UI 表示用：空値は "（空値）" へ変換済み
+  affectedCount: number;
+};
+
 export default function PdfFixturePage() {
   const router = useRouter();
   const [authReady, setAuthReady] = useState(false);
   const [patternId, setPatternId] = useState<FixturePattern>("F-01");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paymentWarning, setPaymentWarning] = useState<PaymentLabelWarning | null>(null);
 
   // ページ表示時に認証状態を確認し、未認証ならログインページへリダイレクト
   useEffect(() => {
@@ -36,6 +42,7 @@ export default function PdfFixturePage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setPaymentWarning(null);
     setLoading(true);
 
     try {
@@ -60,6 +67,24 @@ export default function PdfFixturePage() {
         }
         setError(errorMessage);
         return;
+      }
+
+      // PAYMENT-LABEL-UNKNOWN-01 警告 header の抽出
+      const rawWarning = res.headers.get("X-Payment-Label-Unknown");
+      if (rawWarning) {
+        try {
+          const decoded = decodeURIComponent(rawWarning);
+          const parsed = JSON.parse(decoded) as { values: string[]; affectedCount: number };
+          const uiValues = parsed.values.map((v) =>
+            v === "__empty__" ? "（空値）" : v
+          );
+          setPaymentWarning({ values: uiValues, affectedCount: parsed.affectedCount });
+        } catch (e) {
+          console.warn("Payment label warning header parse error", e);
+          setPaymentWarning(null);
+        }
+      } else {
+        setPaymentWarning(null);
       }
 
       // PDF ダウンロード処理
@@ -128,6 +153,12 @@ export default function PdfFixturePage() {
         {error && (
           <div className="p-3 bg-red-50 border border-red-300 rounded text-red-800 text-sm">
             {error}
+          </div>
+        )}
+
+        {paymentWarning && (
+          <div className="p-3 bg-yellow-50 border border-yellow-400 rounded text-sm text-yellow-800">
+            未対応の支払い方法（{paymentWarning.values.join("、")}）が {paymentWarning.affectedCount} 件の注文に含まれています。PDF の決済方法表示をご確認のうえ、PAYMENT_LABELS への追加マッピング検討をお願いします。金額・税額計算には影響しません。
           </div>
         )}
 
