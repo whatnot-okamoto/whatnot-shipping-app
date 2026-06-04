@@ -163,9 +163,15 @@ export async function generateShippingDocumentsPdf(
   }
 
   for (const { order, orderState } of inputs) {
-    addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
     if (orderState.receipt_required === true) {
       addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
+    }
+    const deliveryPages = addDeliveryNotePage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
+    if (deliveryPages.length >= 2) {
+      const N = deliveryPages.length;
+      deliveryPages.forEach((p, i) => {
+        drawDeliveryPageNumber(p, i + 1, N, helveticaFont);
+      });
     }
   }
 
@@ -418,8 +424,10 @@ function addDeliveryNotePage(
   boldFont: PDFFont,
   helveticaFont: PDFFont,
   logoImage: PDFImage | null
-): void {
+): PDFPage[] {
+  const pages: PDFPage[] = [];
   let page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+  pages.push(page);
   const { destination, destinationSource, showBilling } = resolveRecipient(order);
   const destTel = destinationSource === "receiver"
     ? (order.order_receiver?.tel ?? "")
@@ -601,6 +609,7 @@ function addDeliveryNotePage(
 
     if (y - MARGIN < rowHeight) {
       page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+      pages.push(page);
       y = A4_HEIGHT - MARGIN;
       y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
     }
@@ -641,6 +650,7 @@ function addDeliveryNotePage(
   // 合計欄 収まり判定（PDF-AMOUNT-01: 最大7行＋下マージン）
   if (y - MARGIN < 120) {
     page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
+    pages.push(page);
     y = A4_HEIGHT - MARGIN;
     y = addContinuationHeader(page, order, { regular: regularFont, bold: boldFont }, y);
   }
@@ -702,6 +712,32 @@ function addDeliveryNotePage(
   // 決済方法
   const paymentLabel = PAYMENT_LABELS[order.payment] ?? order.payment;
   text(page, `決済方法：${paymentLabel}`, MARGIN, y, regularFont, 8);
+
+  return pages;
+}
+
+// ============================================================================
+// 納品書ページ番号描画ヘルパー（改善②）
+// N >= 2 の場合のみ呼び出す。右下 MARGIN+4 に「i / N」を右寄せで描画。
+// フォントサイズ: titleSize(18) - 2 = 16pt（候補2）
+// ============================================================================
+
+function drawDeliveryPageNumber(
+  page: PDFPage,
+  current: number,
+  total: number,
+  helveticaFont: PDFFont
+): void {
+  const label = `${current} / ${total}`;
+  const fontSize = 16;
+  const w = helveticaFont.widthOfTextAtSize(label, fontSize);
+  page.drawText(label, {
+    x: RIGHT_EDGE - w,
+    y: MARGIN + 4,
+    size: fontSize,
+    font: helveticaFont,
+    color: rgb(0, 0, 0),
+  });
 }
 
 // ============================================================================
