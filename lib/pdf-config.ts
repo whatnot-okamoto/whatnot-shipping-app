@@ -17,6 +17,9 @@ export const LOGO_SIZE_PT = 80;
 export const LOGO_POSITION = "header" as const;
 export const LOGO_MARGIN_BOTTOM = 8;
 
+// PAYMENT_LABELS は許可リスト的に扱う。
+// このマップに存在しない payment 値が来た場合、checkPaymentLabels で警告対象として検知される。
+// 顧客向け PDF 表示はフォールバック（生コード）を維持する。
 export const PAYMENT_LABELS: Record<string, string> = {
   creditcard: "クレジットカード決済", // 現在の想定値（BASE API復旧後に実値確認）
   paypay: "PayPay",  // 実値確認済み（2026-05-14 Step 4-D本番確認）

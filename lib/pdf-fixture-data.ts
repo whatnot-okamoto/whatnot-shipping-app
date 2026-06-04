@@ -19,7 +19,8 @@ export type FixturePattern =
   | "F-10"
   | "F-11"
   | "F-12"
-  | "F-13";
+  | "F-13"
+  | "F-15";
 
 export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-01",
@@ -35,6 +36,7 @@ export const FIXTURE_PATTERN_IDS: FixturePattern[] = [
   "F-11",
   "F-12",
   "F-13",
+  "F-15",
 ];
 
 export const FIXTURE_LABELS: Record<FixturePattern, string> = {
@@ -51,6 +53,7 @@ export const FIXTURE_LABELS: Record<FixturePattern, string> = {
   "F-11": "F-11: 別送注文（注文主住所が長い・2〜3行折り返し確認）",
   "F-12": "F-12: お届け先住所が4行分超・3行制限挙動確認",
   "F-13": "F-13: 長いバリエーション名・右列縦位置確認",
+  "F-15": "F-15: PAYMENT-LABEL-UNKNOWN-01候補 警告表示検証用（未知payment値）",
 };
 
 // ============================================================================
@@ -676,6 +679,48 @@ const orderF13: BaseOrder = {
 };
 
 // ============================================================================
+// F-15: PAYMENT-LABEL-UNKNOWN-01候補 警告表示検証用
+// payment 値に "test_unknown_payment"（PAYMENT_LABELS 未定義の架空生コード）を設定。
+// 全商品 10%・領収書なし。X-Payment-Label-Unknown header 付与と UI 警告表示の確認用。
+// ============================================================================
+const orderF15: BaseOrder = {
+  unique_key: "FIXTURE-F15-TEST",
+  ordered: 1748001400,
+  cancelled: null,
+  dispatched: null,
+  dispatch_status: "unsent",
+  payment: "test_unknown_payment",
+  shipping_method: null,
+  shipping_fee: 770,
+  cod_fee: 0,
+  total: 3300,
+  last_name: "テスト",
+  first_name: "太郎",
+  zip_code: "100-0001",
+  prefecture: "東京都",
+  address: "千代田区テスト町一丁目二番三号",
+  address2: "",
+  tel: "000-0000-0015",
+  mail_address: "test15@example.com",
+  remark: "",
+  modified: 1748001400,
+  terminated: false,
+  order_receiver: null,
+  order_items: [
+    makeItem(151, "テスト商品A（F-15未知payment値警告確認用）", 2530, 1, {
+      barcode: "4900000000151",
+    }),
+  ],
+  shipping_lines: [
+    {
+      order_item_ids: ["151"],
+      shipping_method: "宅急便",
+      shipping_fee: 770,
+    },
+  ],
+};
+
+// ============================================================================
 // fixture エントリーポイント
 // ============================================================================
 
@@ -752,5 +797,9 @@ export const FIXTURE_DATA: Record<FixturePattern, FixtureEntry> = {
   "F-13": {
     order: orderF13,
     orderState: makeOrderState("FIXTURE-F13-TEST"),
+  },
+  "F-15": {
+    order: orderF15,
+    orderState: makeOrderState("FIXTURE-F15-TEST"),
   },
 };

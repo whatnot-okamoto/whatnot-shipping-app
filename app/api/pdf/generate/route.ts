@@ -8,7 +8,7 @@ import { requireAuth } from "@/lib/auth";
 import { redis } from "@/lib/upstash";
 import { fetchOrderDetail } from "@/lib/base-api";
 import { getBundleStates, getOrderStates } from "@/lib/order-store";
-import { checkTaxRates, generateShippingDocumentsPdf } from "@/lib/pdf-generator";
+import { checkTaxRates, checkPaymentLabels, generateShippingDocumentsPdf } from "@/lib/pdf-generator";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
 const ERROR_TAX_8PERCENT =
@@ -113,6 +113,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: errorMessage }, { status: 422 });
     }
 
+    // (4-c) PAYMENT-LABEL-UNKNOWN-01 支払い方法ラベル未定義チェック（警告モデル・停止しない）
+    //   - checkTaxRates 通過後のみ実行（税率エラー時は早期 return 済み）
+    const paymentLabelCheck = checkPaymentLabels(orders);
+
     // (5) U1データ取得（receipt設定・carrier）
     const orderStateMap = await getOrderStates(allUniqueKeys);
 
@@ -145,12 +149,21 @@ export async function POST(req: Request) {
     const contentDisposition =
       `attachment; filename="${filenameAscii}"; filename*=UTF-8''${filenameEncoded}`;
 
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", "application/pdf");
+    responseHeaders.set("Content-Disposition", contentDisposition);
+
+    if (paymentLabelCheck.hasUnknownPayment) {
+      const payload = JSON.stringify({
+        values: paymentLabelCheck.unknownPaymentValues,
+        affectedCount: paymentLabelCheck.affectedCount,
+      });
+      responseHeaders.set("X-Payment-Label-Unknown", encodeURIComponent(payload));
+    }
+
     return new Response(Buffer.from(pdfBytes), {
       status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": contentDisposition,
-      },
+      headers: responseHeaders,
     });
   } catch (error) {
     console.error(

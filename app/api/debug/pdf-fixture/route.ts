@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import {
   checkTaxRates,
+  checkPaymentLabels,
   generateShippingDocumentsPdf,
 } from "@/lib/pdf-generator";
 import {
@@ -61,7 +62,7 @@ export async function POST(req: Request) {
   if (!FIXTURE_PATTERN_IDS.includes(patternId as FixturePattern)) {
     return NextResponse.json(
       {
-        error: `不正なパターンIDです。F-01〜F-13 のいずれかを指定してください。(受信値: "${patternId}")`,
+        error: `不正なパターンIDです。F-01〜F-13, F-15 のいずれかを指定してください。(受信値: "${patternId}")`,
       },
       { status: 400 }
     );
@@ -80,6 +81,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: errorMessage }, { status: 422 });
     }
 
+    // (4-c) PAYMENT-LABEL-UNKNOWN-01 支払い方法ラベル未定義チェック（警告モデル・停止しない）
+    const paymentLabelCheck = checkPaymentLabels([fixture.order]);
+
     // (5) PDF 生成（lib/pdf-generator.ts の既存ロジックをそのまま使用）
     const pdfBytes = await generateShippingDocumentsPdf([
       { order: fixture.order, orderState: fixture.orderState },
@@ -93,12 +97,21 @@ export async function POST(req: Request) {
     const contentDisposition =
       `attachment; filename="${filenameAscii}"; filename*=UTF-8''${filenameEncoded}`;
 
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", "application/pdf");
+    responseHeaders.set("Content-Disposition", contentDisposition);
+
+    if (paymentLabelCheck.hasUnknownPayment) {
+      const payload = JSON.stringify({
+        values: paymentLabelCheck.unknownPaymentValues,
+        affectedCount: paymentLabelCheck.affectedCount,
+      });
+      responseHeaders.set("X-Payment-Label-Unknown", encodeURIComponent(payload));
+    }
+
     return new Response(Buffer.from(pdfBytes), {
       status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": contentDisposition,
-      },
+      headers: responseHeaders,
     });
   } catch (error) {
     console.error(

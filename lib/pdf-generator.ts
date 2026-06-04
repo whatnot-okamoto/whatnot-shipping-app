@@ -73,6 +73,54 @@ export function checkTaxRates(orders: BaseOrder[]): TaxRateCheckResult {
 }
 
 // ============================================================================
+// PAYMENT-LABEL-UNKNOWN-01 支払い方法ラベル未定義チェック
+//
+// PAYMENT_LABELS に存在しない payment 値を持つ注文を検知する（警告モデル）。
+// PDF出力を止めない。affectedCount は未定義値を含む注文件数（値種別数ではない）。
+// ============================================================================
+
+export type PaymentLabelCheckResult = {
+  hasUnknownPayment: boolean;
+  unknownPaymentValues: string[];   // 検知された生コード（重複除去・発見順序維持）。空値は "__empty__"
+  affectedCount: number;            // 影響を受けた注文件数
+};
+
+const EMPTY_PAYMENT_INTERNAL = "__empty__";
+
+export function checkPaymentLabels(
+  orders: BaseOrder[]
+): PaymentLabelCheckResult {
+  const valuesSet = new Set<string>();
+  const orderedValues: string[] = [];
+  let affectedCount = 0;
+
+  for (const order of orders) {
+    const raw = order.payment;
+    let key: string;
+
+    if (raw === "" || raw === null || raw === undefined) {
+      key = EMPTY_PAYMENT_INTERNAL;
+    } else if (!(raw in PAYMENT_LABELS)) {
+      key = raw;
+    } else {
+      continue;  // マッピング済み → 検知対象外
+    }
+
+    if (!valuesSet.has(key)) {
+      valuesSet.add(key);
+      orderedValues.push(key);
+    }
+    affectedCount += 1;
+  }
+
+  return {
+    hasUnknownPayment: orderedValues.length > 0,
+    unknownPaymentValues: orderedValues,
+    affectedCount,
+  };
+}
+
+// ============================================================================
 // エントリーポイント
 // ============================================================================
 
