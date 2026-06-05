@@ -15,6 +15,7 @@ const A4_HEIGHT = 841.89;
 const MARGIN = 40;
 const CONTENT_WIDTH = A4_WIDTH - MARGIN * 2;
 const RIGHT_EDGE = MARGIN + CONTENT_WIDTH;
+const FOOTER_RESERVE = 24; // ページ番号描画用のフッター予約領域（pt）
 
 const CARRIER_LABELS: Record<string, string> = {
   sagawa: "佐川急便",
@@ -607,7 +608,7 @@ function addDeliveryNotePage(
     const contentHeight = wrappedLines.length * 12 + (item.variation ? 10 : 0);
     const rowHeight = contentHeight + 10;
 
-    if (y - MARGIN < rowHeight) {
+    if (y - MARGIN < rowHeight + FOOTER_RESERVE) {
       page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
       pages.push(page);
       y = A4_HEIGHT - MARGIN;
@@ -648,7 +649,7 @@ function addDeliveryNotePage(
   }
 
   // 合計欄 収まり判定（PDF-AMOUNT-01: 最大7行＋下マージン）
-  if (y - MARGIN < 120) {
+  if (y - MARGIN < 120 + FOOTER_RESERVE) {
     page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT]);
     pages.push(page);
     y = A4_HEIGHT - MARGIN;
