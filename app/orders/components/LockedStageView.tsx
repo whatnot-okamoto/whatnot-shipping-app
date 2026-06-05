@@ -8,6 +8,7 @@ import LockedBundleGroupCard from "./LockedBundleGroupCard";
 import PdfOutputSection from "./PdfOutputSection";
 import CsvOutputSection from "./CsvOutputSection";
 import TrackingInputSection from "./TrackingInputSection";
+import EmergencyUnlockModal from "./EmergencyUnlockModal";
 import type { CsvStatusMap, CsvStatus } from "@/lib/session-store";
 
 export type LockedBundleInfo = {
@@ -39,6 +40,8 @@ export default function LockedStageView({
 }: Props) {
   // CsvOutputSection のステータスをローカルで保持（サーバー保存済み・表示即時反映用）
   const [localCsvStatus, setLocalCsvStatus] = useState<CsvStatusMap>(csvStatus);
+  // SESSION-UNLOCK-UI-01 Phase 2: 緊急解除モーダルの開閉状態
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
 
   const handleCsvStatusChange = (
     carrier: "nekopos" | "sagawa" | "yamato",
@@ -91,6 +94,26 @@ export default function LockedStageView({
       <TrackingInputSection
         lockedBundles={lockedBundles}
         csvStatus={localCsvStatus}
+      />
+
+      {/* SESSION-UNLOCK-UI-01 Phase 2: 緊急解除ボタン（概要設計書 7-2④） */}
+      <div className="mt-6 pt-4 border-t border-red-100">
+        <button
+          type="button"
+          onClick={() => setIsUnlockModalOpen(true)}
+          className="w-full py-2.5 text-sm font-medium rounded
+                     bg-red-50 border border-red-400 text-red-900
+                     hover:bg-red-100 active:bg-red-200"
+        >
+          緊急セッション解除
+        </button>
+      </div>
+
+      {/* 緊急解除確認モーダル（SESSION-UNLOCK-UI-01 Phase 2） */}
+      <EmergencyUnlockModal
+        isOpen={isUnlockModalOpen}
+        onClose={() => setIsUnlockModalOpen(false)}
+        onUnlockSuccess={onRefreshSession}
       />
     </div>
   );
