@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { fetchOrderDetail } from "@/lib/base-api";
-import { checkTaxRates, generateShippingDocumentsPdf } from "@/lib/pdf-generator";
+import { checkTaxRates, generateShippingDocumentsPdf, generateReceiptOnlyPdf } from "@/lib/pdf-generator";
 import type { U1Data } from "@/lib/order-store";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
@@ -42,10 +42,22 @@ export async function POST(req: Request) {
   // (2) リクエストボディから unique_key を取得
   let uniqueKey: string;
   let withReceipt: boolean;
+  let receiptOnly: boolean;
+  let receiptName: string;
+  let receiptNote: string;
   try {
-    const body = (await req.json()) as { unique_key?: string; withReceipt?: boolean };
+    const body = (await req.json()) as {
+      unique_key?: string;
+      withReceipt?: boolean;
+      receiptOnly?: boolean;
+      receipt_name?: string;
+      receipt_note?: string;
+    };
     uniqueKey = (body.unique_key ?? "").trim();
     withReceipt = body.withReceipt === true;
+    receiptOnly = body.receiptOnly === true;
+    receiptName = (body.receipt_name ?? "").trim();
+    receiptNote = (body.receipt_note ?? "").trim();
   } catch {
     return NextResponse.json(
       { error: "リクエストの解析に失敗しました。" },
@@ -74,33 +86,43 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: errorMessage }, { status: 422 });
     }
 
-    // (5) 検証用デフォルト U1Data（Upstash 不使用・フラグ更新なし）
-    // withReceipt===true の場合のみ receipt_required を in-memory で true に付与する。
+    // (5) U1Data 構築（Upstash 不使用・フラグ更新なし）
     // Upstash KV・BASE API・キャッシュへの書き込みは一切行わない。
     const orderState: U1Data = {
       unique_key: order.unique_key,
       hold_flag: false,
       hold_reason: "",
       carrier: "",
-      receipt_required: withReceipt,
-      receipt_name: "",
-      receipt_note: "",
+      receipt_required: receiptOnly ? true : withReceipt,
+      receipt_name: receiptOnly ? receiptName : "",
+      receipt_note: receiptOnly ? receiptNote : "",
       app_memo: "",
       cancelled_flag: false,
     };
 
-    // (6) PDF 生成（lib/pdf-generator.ts の既存ロジックをそのまま使用）
-    const pdfBytes = await generateShippingDocumentsPdf([{ order, orderState }]);
+    // (6) PDF 生成
+    let pdfBytes: Uint8Array;
+    if (receiptOnly) {
+      // receiptOnly 経路: 領収書のみ生成
+      pdfBytes = await generateReceiptOnlyPdf([{ order, orderState }]);
+    } else {
+      // 既存経路: 納品書（＋領収書セクション）生成
+      pdfBytes = await generateShippingDocumentsPdf([{ order, orderState }]);
+    }
 
     // (7) PDF バイナリをレスポンスとして返す
     const timestamp = getJstTimestamp();
     const uniqueKeySuffix = uniqueKey.slice(-8);
-    const filenameJa = withReceipt
-      ? `TEST_BASE納品書領収書_${uniqueKeySuffix}_${timestamp}.pdf`
-      : `TEST_BASE納品書_${uniqueKeySuffix}_${timestamp}.pdf`;
-    const filenameAscii = withReceipt
-      ? `TEST_BASE_delivery_receipt_${uniqueKeySuffix}_${timestamp}.pdf`
-      : `TEST_BASE_delivery_${uniqueKeySuffix}_${timestamp}.pdf`;
+    const filenameJa = receiptOnly
+      ? `BASE領収書_${uniqueKeySuffix}_${timestamp}.pdf`
+      : withReceipt
+        ? `TEST_BASE納品書領収書_${uniqueKeySuffix}_${timestamp}.pdf`
+        : `TEST_BASE納品書_${uniqueKeySuffix}_${timestamp}.pdf`;
+    const filenameAscii = receiptOnly
+      ? `BASE_receipt_${uniqueKeySuffix}_${timestamp}.pdf`
+      : withReceipt
+        ? `TEST_BASE_delivery_receipt_${uniqueKeySuffix}_${timestamp}.pdf`
+        : `TEST_BASE_delivery_${uniqueKeySuffix}_${timestamp}.pdf`;
     const filenameEncoded = encodeURIComponent(filenameJa);
     const contentDisposition =
       `attachment; filename="${filenameAscii}"; filename*=UTF-8''${filenameEncoded}`;

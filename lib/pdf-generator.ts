@@ -179,6 +179,50 @@ export async function generateShippingDocumentsPdf(
   return pdfDoc.save();
 }
 
+export async function generateReceiptOnlyPdf(
+  inputs: PdfOrderInput[]
+): Promise<Uint8Array> {
+  if (inputs.length === 0) {
+    throw new Error("generateReceiptOnlyPdf: inputs must not be empty");
+  }
+
+  const regularFontPath = path.join(
+    process.cwd(),
+    "public/fonts/NotoSansJP-Regular.ttf"
+  );
+  const boldFontPath = path.join(
+    process.cwd(),
+    "public/fonts/NotoSansJP-Bold.ttf"
+  );
+
+  const [regularFontBytes, boldFontBytes] = await Promise.all([
+    readFile(regularFontPath),
+    readFile(boldFontPath),
+  ]);
+
+  const pdfDoc = await PDFDocument.create();
+  pdfDoc.registerFontkit(fontkit);
+
+  const regularFont = await pdfDoc.embedFont(regularFontBytes, { subset: false });
+  const boldFont = await pdfDoc.embedFont(boldFontBytes, { subset: false });
+  const helveticaFont = await pdfDoc.embedStandardFont(StandardFonts.Helvetica);
+
+  let logoImage: PDFImage | null = null;
+  try {
+    const logoPath = path.join(process.cwd(), "public", "images", "logo.png");
+    const logoBytes = await readFile(logoPath);
+    logoImage = await pdfDoc.embedPng(logoBytes);
+  } catch {
+    console.warn("[PDF-LOGO-01] logo.png load failed. Fallback to no-logo PDF.");
+  }
+
+  for (const { order, orderState } of inputs) {
+    addReceiptPage(pdfDoc, order, orderState, regularFont, boldFont, helveticaFont, logoImage);
+  }
+
+  return pdfDoc.save();
+}
+
 // ============================================================================
 // お届け先解決（DEST-01 PDF版）
 //
