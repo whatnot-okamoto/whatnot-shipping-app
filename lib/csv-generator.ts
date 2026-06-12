@@ -192,38 +192,6 @@ function extractRecipient(
 }
 
 // ============================================================================
-// 住所分割（佐川用：都道府県/市区町村/番地・建物名）
-// ============================================================================
-
-/**
- * address フィールド（都道府県を含まない）を市区町村と番地部分に分割する。
- * BASE公式CSV分割構造踏襲。機械的な文字数切り分けは禁止。
- *
- * 政令指定都市優先: [^\d\s]+市[^\d\s]+区 パターンを最初に試みる。
- * 一般: 非貪欲で最初の市/区/町/村を市区町村境界とする。
- * 分割不能（境界文字なし・street部分が空）の場合は null を返す。
- */
-function splitAddressCityStreet(
-  address: string
-): { city: string; street: string } | null {
-  if (!address.trim()) return null;
-
-  // 政令指定都市: 市+区 パターン（例: "名古屋市中区", "大阪市北区"）
-  const complexMatch = address.match(/^([^\d\s]+市[^\d\s]+区)(.+)$/);
-  if (complexMatch && complexMatch[2].trim()) {
-    return { city: complexMatch[1], street: complexMatch[2] };
-  }
-
-  // 一般: 非貪欲で最初の 市|区|町|村 を境界とする
-  const simpleMatch = address.match(/^(.+?[市区町村])(.+)$/);
-  if (simpleMatch && simpleMatch[2].trim()) {
-    return { city: simpleMatch[1], street: simpleMatch[2] };
-  }
-
-  return null;
-}
-
-// ============================================================================
 // CSV行ビルダーユーティリティ
 // ============================================================================
 
@@ -472,22 +440,15 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
   const rep = orders[0];
   const r = extractRecipient(rep, source);
 
-  // 住所分割（都道府県は r.prefecture で取得済み）
-  const split = splitAddressCityStreet(r.addressStreet);
-  if (!split) {
-    throw new CsvGeneratorError(
-      `佐川CSV（bundle_group_id: ${bundleGroupId}）の住所を市区町村/番地に分割できません。` +
-        `住所: "${r.addressStreet}"。` +
-        `市・区・町・村の境界文字が見つかりません。住所を確認してください。`,
-      bundleGroupId
-    );
-  }
+  // 住所は意味分割せず素直にマッピングする（案A）。
+  // 都道府県は r.prefecture（col5）で取得済み。
+  // 市区町村境界が見つからない住所でもバッチを停止させない。
+  // 推測分割・自動分割・切り捨てを行わず、住所情報を脱落させない。
+  // col6: 住所まるごと（addressStreet。文字数超過時もCSV出力を継続する）
+  const col6 = r.addressStreet;
 
-  // col6: 市区町村（文字数超過時もCSV出力を継続する）
-  const col6 = split.city;
-
-  // col7: 番地・建物名（addressStreet の番地部分 + address2, 文字数超過時もCSV出力を継続する）
-  const col7 = `${split.street}${r.addressBuilding}`;
+  // col7: 建物名（addressBuilding = address2。文字数超過時もCSV出力を継続する）
+  const col7 = r.addressBuilding;
 
   // col8: 氏名（全角16文字上限、超過分を col9 へ）
   const fullName = r.fullName;
