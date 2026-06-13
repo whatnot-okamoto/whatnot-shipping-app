@@ -159,6 +159,14 @@ export default function OrdersPage() {
       setLockedBundles(data.locked_bundles ?? []);
       return true;
     }
+    // active 以外（解除後の session=null 含む）: 古い active state を残さず初期値相当へリセット
+    setSession({
+      session_status: "none",
+      locked_bundle_group_ids: [],
+      refetch_done_flag: false,
+      diff_confirmed_flag: false,
+      pdf_output_done_flag: false,
+    });
     return false;
   }, []);
 
@@ -319,7 +327,10 @@ export default function OrdersPage() {
           lockedBundles={lockedBundles}
           pdfOutputDoneFlag={session.pdf_output_done_flag ?? false}
           csvStatus={session.csv_status ?? { nekopos: "pending", sagawa: "pending", yamato: "pending" }}
-          onRefreshSession={async () => { await fetchCurrentSession(); }}
+          onRefreshSession={async () => {
+            const isActive = await fetchCurrentSession();
+            if (!isActive) await fetchOrdersList();
+          }}
         />
       ) : (
         // ロック前ステージ（注文一覧・選択UI）
