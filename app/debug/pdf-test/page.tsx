@@ -6,6 +6,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { usePaymentLabelWarning } from "@/app/_hooks/usePaymentLabelWarning";
+import PaymentLabelWarningBanner from "@/app/_components/PaymentLabelWarningBanner";
 
 export default function PdfTestPage() {
   const router = useRouter();
@@ -19,6 +21,18 @@ export default function PdfTestPage() {
   const [receiptNote, setReceiptNote] = useState("");
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
+
+  // 納品書セクション・領収書セクションそれぞれで独立した警告 state を保持
+  const {
+    paymentWarning,
+    parsePaymentWarning,
+    reset: resetPaymentWarning,
+  } = usePaymentLabelWarning();
+  const {
+    paymentWarning: receiptPaymentWarning,
+    parsePaymentWarning: parseReceiptPaymentWarning,
+    reset: resetReceiptPaymentWarning,
+  } = usePaymentLabelWarning();
 
   // ページ表示時に認証状態を確認し、未認証ならログインページへリダイレクト
   useEffect(() => {
@@ -44,6 +58,7 @@ export default function PdfTestPage() {
     }
 
     setReceiptError(null);
+    resetReceiptPaymentWarning();
     setReceiptLoading(true);
 
     try {
@@ -74,6 +89,9 @@ export default function PdfTestPage() {
         setReceiptError(errorMessage);
         return;
       }
+
+      // PAYMENT-LABEL-UNKNOWN-01 警告 header の解析（共有 hook）
+      parseReceiptPaymentWarning(res);
 
       const blob = await res.blob();
       const contentDisposition = res.headers.get("Content-Disposition") ?? "";
@@ -109,6 +127,7 @@ export default function PdfTestPage() {
     }
 
     setError(null);
+    resetPaymentWarning();
     setLoading(true);
 
     try {
@@ -134,6 +153,9 @@ export default function PdfTestPage() {
         setError(errorMessage);
         return;
       }
+
+      // PAYMENT-LABEL-UNKNOWN-01 警告 header の解析（共有 hook）
+      parsePaymentWarning(res);
 
       // PDF ダウンロード処理
       const blob = await res.blob();
@@ -236,6 +258,8 @@ export default function PdfTestPage() {
             </div>
           )}
 
+          <PaymentLabelWarningBanner warning={receiptPaymentWarning} />
+
           <button
             type="submit"
             disabled={receiptLoading}
@@ -291,6 +315,8 @@ export default function PdfTestPage() {
               {error}
             </div>
           )}
+
+          <PaymentLabelWarningBanner warning={paymentWarning} />
 
           <button
             type="submit"

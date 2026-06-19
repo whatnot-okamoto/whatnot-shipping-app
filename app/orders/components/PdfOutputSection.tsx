@@ -3,6 +3,8 @@
 import { useState } from "react";
 import type { LockedBundleInfo } from "./LockedStageView";
 import ReceiptNameWarningModal from "./ReceiptNameWarningModal";
+import { usePaymentLabelWarning } from "@/app/_hooks/usePaymentLabelWarning";
+import PaymentLabelWarningBanner from "@/app/_components/PaymentLabelWarningBanner";
 
 function extractFilenameFromContentDisposition(header: string | null): string {
   if (!header) return "whatnot-shipping.pdf";
@@ -35,15 +37,10 @@ export default function PdfOutputSection({
   lockedBundles,
   onSuccess,
 }: Props) {
-  type PaymentLabelWarning = {
-    values: string[];
-    affectedCount: number;
-  };
-
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showWarning, setShowWarning] = useState(false);
-  const [paymentWarning, setPaymentWarning] = useState<PaymentLabelWarning | null>(null);
+  const { paymentWarning, parsePaymentWarning } = usePaymentLabelWarning();
 
   // receipt_required===true かつ receipt_name が空の注文が1件以上あるか
   const hasEmptyReceiptName = lockedBundles.some(
@@ -71,23 +68,8 @@ export default function PdfOutputSection({
         return;
       }
 
-      // PAYMENT-LABEL-UNKNOWN-01 警告 header の抽出
-      const rawPaymentWarning = res.headers.get("X-Payment-Label-Unknown");
-      if (rawPaymentWarning) {
-        try {
-          const decoded = decodeURIComponent(rawPaymentWarning);
-          const parsed = JSON.parse(decoded) as { values: string[]; affectedCount: number };
-          const uiValues = parsed.values.map((v) =>
-            v === "__empty__" ? "（空値）" : v
-          );
-          setPaymentWarning({ values: uiValues, affectedCount: parsed.affectedCount });
-        } catch (e) {
-          // パース失敗時は警告を立てない（エラー扱いにもしない）
-          console.warn("Payment label warning header parse error", e);
-        }
-      } else {
-        setPaymentWarning(null);
-      }
+      // PAYMENT-LABEL-UNKNOWN-01 警告 header の解析（共有 hook）
+      parsePaymentWarning(res);
 
       // blobとして受け取りブラウザダウンロードを実行
       const contentDisposition = res.headers.get("Content-Disposition");
@@ -115,11 +97,7 @@ export default function PdfOutputSection({
         <p className="mb-3 text-sm text-red-600">{error}</p>
       )}
 
-      {paymentWarning && (
-        <div className="mb-3 p-3 bg-yellow-50 border border-yellow-400 rounded text-sm text-yellow-800">
-          未対応の支払い方法（{paymentWarning.values.join("、")}）が {paymentWarning.affectedCount} 件の注文に含まれています。PDF の決済方法表示をご確認のうえ、PAYMENT_LABELS への追加マッピング検討をお願いします。金額・税額計算には影響しません。
-        </div>
-      )}
+      <PaymentLabelWarningBanner warning={paymentWarning} withMargin />
 
       {!pdfOutputDoneFlag ? (
         // 初回出力ボタン
