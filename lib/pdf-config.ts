@@ -23,5 +23,8 @@ export const LOGO_MARGIN_BOTTOM = 8;
 export const PAYMENT_LABELS: Record<string, string> = {
   creditcard: "クレジットカード決済", // 現在の想定値（BASE API復旧後に実値確認）
   paypay: "PayPay",  // 実値確認済み（2026-05-14 Step 4-D本番確認）
-  // TODO: paypal 等はBASE API実値確認後に追記する
+  paypal: "PayPal決済",
+  bnpl: "PAY ID あと払い",
+  // paypal / bnpl は BASE 公式の決済コードに基づき追加。
+  // bnpl_installment は PAY ID 3回あと払いが有効化されるまで追加しない。
 };
