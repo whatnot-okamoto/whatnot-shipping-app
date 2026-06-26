@@ -17,13 +17,25 @@ type Props = {
   onUnlockSuccess: () => Promise<void> | void;
 };
 
+// SESSION-UNLOCK-REASON-PRESET-01: 緊急解除理由のプリセット（4択）
+// 表示文言は監査ログに reason として残るため一字一句変更しない。
+type ReasonKey = "order" | "carrier" | "document" | "other";
+
+const REASON_PRESETS: { key: ReasonKey; label: string }[] = [
+  { key: "order", label: "注文内容・金額の変更（キャンセル・同梱・送料など）" },
+  { key: "carrier", label: "配送方法・配送業者の変更（ネコポス／佐川／ヤマトなど）" },
+  { key: "document", label: "領収書・納品書など帳票内容の修正" },
+  { key: "other", label: "その他" },
+];
+
 export default function EmergencyUnlockModal({
   isOpen,
   onClose,
   onUnlockSuccess,
 }: Props) {
   const { data: sessionData } = useSession();
-  const [reason, setReason] = useState("");
+  const [selectedKey, setSelectedKey] = useState<ReasonKey | null>(null);
+  const [supplement, setSupplement] = useState("");
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -33,15 +45,26 @@ export default function EmergencyUnlockModal({
   const executedBy = sessionData?.user?.name?.trim() ?? "";
   const isExecutedByMissing = executedBy === "";
 
-  const isReasonEmpty = reason.trim() === "";
+  // 解除ボタン活性条件: プリセット選択済み AND session.user.name 非空（両方満たす場合のみ）
+  // 「その他」選択時は補足空でも活性（補足任意）。
+  const canUnlock = selectedKey !== null && !isExecutedByMissing;
 
-  // 解除ボタン活性条件: reason 非空 AND session.user.name 非空（両方満たす場合のみ）
-  const canUnlock = !isReasonEmpty && !isExecutedByMissing;
+  // 送信時 reason 組み立て（常に非空）
+  const buildReason = (key: ReasonKey): string => {
+    if (key === "other") {
+      const trimmed = supplement.trim();
+      return trimmed === "" ? "その他" : `その他: ${trimmed}`;
+    }
+    return REASON_PRESETS.find((p) => p.key === key)!.label;
+  };
 
   const handleUnlock = async () => {
+    // 実装上の安全ガード（UI 上はボタン非活性）: 未選択なら送信しない
+    if (selectedKey === null) return;
     // クライアント側防衛チェック（補正2 安全停止ルール）
-    if (reason.trim() === "") return;
     if (executedBy === "") return;
+
+    const reason = buildReason(selectedKey);
 
     setIsUnlocking(true);
     setApiError(null);
@@ -52,7 +75,7 @@ export default function EmergencyUnlockModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           executed_by: executedBy,
-          reason: reason.trim(),
+          reason,
         }),
       });
 
@@ -64,7 +87,8 @@ export default function EmergencyUnlockModal({
 
       // 成功: リフレッシュ後にモーダルを閉じる
       await onUnlockSuccess();
-      setReason("");
+      setSelectedKey(null);
+      setSupplement("");
       setApiError(null);
       onClose();
     } catch {
@@ -75,7 +99,8 @@ export default function EmergencyUnlockModal({
   };
 
   const handleCancel = () => {
-    setReason("");
+    setSelectedKey(null);
+    setSupplement("");
     setApiError(null);
     onClose();
   };
@@ -106,26 +131,45 @@ export default function EmergencyUnlockModal({
             </div>
           )}
 
-          {/* reason 入力フィールド */}
+          {/* reason 選択フィールド（4択ラジオ） */}
           <div>
-            <label
-              htmlFor="unlock-reason"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
+            <span className="block text-sm font-medium text-gray-700 mb-1">
               解除理由
               <span className="ml-1 text-red-600 text-xs">（必須）</span>
-            </label>
-            <textarea
-              id="unlock-reason"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              rows={3}
-              placeholder="解除理由を入力してください"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm
-                         focus:outline-none focus:ring-2 focus:ring-red-400
-                         disabled:bg-gray-100 disabled:cursor-not-allowed resize-none"
-              disabled={isUnlocking}
-            />
+            </span>
+            <div className="space-y-2">
+              {REASON_PRESETS.map((preset) => (
+                <label
+                  key={preset.key}
+                  className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer"
+                >
+                  <input
+                    type="radio"
+                    name="unlock-reason"
+                    value={preset.key}
+                    checked={selectedKey === preset.key}
+                    onChange={() => setSelectedKey(preset.key)}
+                    disabled={isUnlocking}
+                    className="mt-0.5 disabled:cursor-not-allowed"
+                  />
+                  <span>{preset.label}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* 「その他」選択時のみ補足入力（任意） */}
+            {selectedKey === "other" && (
+              <textarea
+                value={supplement}
+                onChange={(e) => setSupplement(e.target.value)}
+                rows={3}
+                placeholder="補足（任意）"
+                className="mt-2 w-full border border-gray-300 rounded px-3 py-2 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-red-400
+                           disabled:bg-gray-100 disabled:cursor-not-allowed resize-none"
+                disabled={isUnlocking}
+              />
+            )}
           </div>
 
           {/* API エラー表示 */}
