@@ -20,7 +20,11 @@
 | 本番反映GO | 明示された本番反映作業 | 未指定の反映、追加の外部書き込み |
 | 本番確認GO | 明示された本番確認作業 | 本番反映、設定変更、データ更新 |
 
-編集GOはcommitを含まない。commit GOはpushを含まない。push GOはdeployや本番反映を含まない。deploy GOは本番反映を含まない。
+編集GOはcommitを含まない。commit GOはpushを含まない。push GOはdeploy操作、本番反映確認、本番実機確認を含まない。deploy GOは本番反映を含まない。
+
+ただし、旧CoWork記録上は、GitHub `master` pushがVercel Production自動deployに接続されていた可能性が高い。そのため、BASE出荷アプリ開発側の `master` へpushするGOでは、push自体がVercel自動deployを起動する可能性を事前に明示する。
+
+production branchやVercel Git Integrationの現在状態が未確認の場合、push前に人間確認またはread-only確認を挟む。push後にVercel自動deployが走った可能性があっても、確認なしに本番反映済み・本番正常とは断定しない。
 
 テスト・検証GOがあっても、外部サービス、本番データ、秘密情報、BASE API、配送CSV、帳票、請求・金額に触れる検証は別途明示GOと人間確認を必要とする。
 
