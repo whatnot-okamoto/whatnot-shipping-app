@@ -104,8 +104,10 @@ export async function POST(req: Request) {
     }
 
     // (4-b) PDF-AMOUNT-01 商品税率チェック
-    //   - 8%商品 / 税率不明商品が含まれる場合はPDF出力を停止し HTTP 422 を返す
-    //   - pdf_output_done_flag は変更しない
+    //   - 8%商品は通常出力する
+    //   - 税率不明商品だけがPDF出力停止・HTTP 422の対象
+    //   - has8percent分岐は既存参照として残るが、現在のcheckTaxRatesからは返らない
+    //   - エラー時もpdf_output_done_flagは変更しない
     const taxCheck = checkTaxRates(orders);
     if (!taxCheck.ok) {
       const errorMessage =
