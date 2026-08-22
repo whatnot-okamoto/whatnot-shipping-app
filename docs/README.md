@@ -1,17 +1,13 @@
 # docs
 
-この `docs/` は、旧Claude Code / CoWork体制およびCodex移行検討の過程で、本体repo側に残った設計文書、引き継ぎ文書、legacy文書を含む可能性がある。
+この`docs/`配下に残る文書は歴史資料であり、現役の実装指示・設計正本ではない。
 
-現在のBASE出荷アプリCodex開発では、厚い設計素材、原典保全、引き継ぎ、legacy隔離、未決事項管理の主な配置責任は、`BASE出荷アプリCodex開発` repo側へ移す方針である。
+現役の設計、現在地、残論点、判断根拠の正本は、次の新Primaryとする。
 
-この文書は、`docs/` を削除してよいという意味ではない。また、Git履歴上の露出やpublic repo上の露出が解消済みであることも意味しない。
+`C:\Users\okamotok1\Documents\CodexWork\BASE出荷アプリCodex開発本線`
 
-この本体repo側 `docs/` を編集、削除、移動、要約置換、ポインタ化する場合は、先に以下を確認する。
+原典保全先は新Primaryの`archive/`、原典の分類・参照・状態の正本は新Primaryの`source-map.md`である。
 
-- Codex開発repo側での原典保全先
-- 移動元、移動経緯、戻り道
-- Git履歴上の扱い
-- public露出、履歴露出、private化要否
-- push時のVercel Production自動deploy可能性
+今回、App `docs/`配下の削除・移動、Git履歴対策、public露出・履歴露出への対処は行わない。これらは必要時に対象と承認範囲を別途定める。
 
-現在実装事実は、この `docs/` ではなく、本体repoのコード、設定、実行結果、明示GOで確認した事実を優先する。
+現在の実装事実は、この`docs/`ではなく、App本体のコード、設定、確認済み実行結果を正とする。

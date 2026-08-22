@@ -1,3 +1,6 @@
+> [!CAUTION]
+> この文書は歴史資料であり、現役の実装指示・承認規則ではない。本文中の命令形、監査GO、Claude Code向け手順を現在の作業へ適用しない。本文中のChatGPT監査GO、旧工程別承認、旧設計役チャットへの参照は現在の開発ループでは無効である。現役正本は、新Primary `C:\Users\okamotok1\Documents\CodexWork\BASE出荷アプリCodex開発本線`の`authority.md`、`session_state.md`、カテゴリ別残論点と`followups/索引版.md`、およびAppの`AGENTS.md`である。現役正本と競合する場合は本文を採用しない。
+
 # WHATNOT出荷アプリ 実装参照文書
 
 ## Claude Code向け 実装入口文書

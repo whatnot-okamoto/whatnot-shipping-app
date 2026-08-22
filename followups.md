@@ -1,9 +1,11 @@
 # followups.md
 
-本体repo側では、未決事項の主台帳を今後増やさない方針である。
+このApp repoは、現役の残論点台帳を保持しない。
 
-BASE出荷アプリCodex開発における未決事項、配置責任、docs保全、アプリ本体repo操作導線、認証情報・環境変数移行設計などは、`BASE出荷アプリCodex開発` repo側の `followups.md` を主な管理先とする。
+設計、現在地、残論点、判断根拠、開発運用の正本は、次の新Primaryとする。
 
-この本体repo側 `followups.md` は、過去の移行作業中に作成・更新された未決メモを含む可能性がある。現在の未決台帳として扱う前に、Codex開発repo側の現在地と照合する。
+`C:\Users\okamotok1\Documents\CodexWork\BASE出荷アプリCodex開発本線`
 
-この文書のポインタ化は、過去の未決事項が完了したこと、docsを削除してよいこと、public露出や履歴露出が解消済みであることを意味しない。
+個別論点の詳細正本は新Primaryの`followups/`にあるカテゴリ別残論点ファイル、導出索引は`followups/索引版.md`である。
+
+この文書は新Primaryへの最小ポインタであり、現役台帳ではない。App repoへ詳細残論点や実値を転記しない。

@@ -1,3 +1,6 @@
+> [!CAUTION]
+> この文書は歴史資料であり、現役の実装指示・承認規則ではない。本文中の命令形、監査GO、Claude Code向け手順を現在の作業へ適用しない。現役正本は、新Primary `C:\Users\okamotok1\Documents\CodexWork\BASE出荷アプリCodex開発本線`の`authority.md`、`session_state.md`、カテゴリ別残論点と`followups/索引版.md`、およびAppの`AGENTS.md`である。現役正本と競合する場合は本文を採用しない。
+
 # Step 4-A3 実装指示文（最終確定版）
 ## 再取得・差分確認フラグの最小実装
 
