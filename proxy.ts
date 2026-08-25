@@ -9,7 +9,8 @@ export async function proxy(req: NextRequest) {
     const { pathname } = req.nextUrl;
     const isApiRoute =
       pathname.startsWith("/api/orders") ||
-      pathname.startsWith("/api/session");
+      pathname.startsWith("/api/session") ||
+      pathname.startsWith("/api/receipts");
 
     if (isApiRoute) {
       return NextResponse.json(
@@ -30,7 +31,10 @@ export const config = {
   matcher: [
     "/orders/:path*",
     "/orders",
+    "/receipts/:path*",
+    "/receipts",
     "/api/orders/:path*",
     "/api/session/:path*",
+    "/api/receipts/:path*",
   ],
 };

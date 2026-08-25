@@ -432,6 +432,32 @@ function getMockOrderSummaries(): BaseOrderSummary[] {
 
 function getMockOrderDetail(uniqueKey: string): BaseOrder {
   const mockDetails: Record<string, BaseOrder> = {
+    "MOCK-RECEIPT": {
+      unique_key: "MOCK-RECEIPT", ordered: 1745497200, cancelled: null, dispatched: 1745508000,
+      dispatch_status: "dispatched", payment: "creditcard",
+      shipping_method: null, shipping_fee: 770,
+      total: 5500, first_name: "太郎", last_name: "確認",
+      zip_code: "150-0001", prefecture: "東京都",
+      address: "テスト住所1-1-1", address2: "", tel: "0000000000",
+      remark: "", modified: 1745508000, terminated: true,
+      order_receiver: {
+        last_name: "確認", first_name: "太郎", zip_code: "150-0001",
+        prefecture: "東京都", address: "テスト住所1-1-1", address2: "",
+        tel: "0000000000", country: "Japan", country_code: "JP",
+      },
+      order_items: [
+        {
+          order_item_id: 10001, item_id: 200, variation_id: 0,
+          title: "領収書共有テスト商品", barcode: "0000000000000",
+          variation: "", variation_identifier: "",
+          amount: 1, price: 4730, status: "dispatched",
+          consumption_tax_rate: 10,
+        },
+      ],
+      shipping_lines: [
+        { order_item_ids: ["10001"], shipping_method: "宅配便", shipping_fee: 770 },
+      ],
+    },
     "MOCK-1001": {
       unique_key: "MOCK-1001", ordered: 1745497200, cancelled: null, dispatched: null,
       dispatch_status: "ordered", payment: "creditcard",

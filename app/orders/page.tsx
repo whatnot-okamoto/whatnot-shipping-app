@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import OrderCard, { type Order } from "./components/OrderCard";
 import SessionStatusBar from "./components/SessionStatusBar";
+import AppNavigation from "@/app/_components/AppNavigation";
 import DiffConfirmModal, { type DiffResult } from "./components/DiffConfirmModal";
 import SessionLockConfirmModal from "./components/SessionLockConfirmModal";
 import LockedStageView, { type LockedBundleInfo } from "./components/LockedStageView";
@@ -320,6 +321,8 @@ export default function OrdersPage() {
           diffConfirmedFlag={session.diff_confirmed_flag}
         />
       </div>
+
+      <AppNavigation />
 
       {isLockedStage ? (
         // ロック後ステージ（session_status === "active"）
