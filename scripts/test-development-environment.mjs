@@ -306,4 +306,32 @@ const missingShippingIndeterminate = analyzePartialCancellation({
 });
 assert.equal(missingShippingIndeterminate.amountRelation, "indeterminate");
 
+const nullOrderShippingIndeterminate = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_000,
+  shipping_fee: null,
+  order_items: [
+    {
+      status: "ordered",
+      total: 1_000,
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(nullOrderShippingIndeterminate.amountRelation, "indeterminate");
+
+const nullItemShippingIndeterminate = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_000,
+  order_items: [
+    {
+      status: "ordered",
+      total: 1_000,
+      shipping_fee: null,
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(nullItemShippingIndeterminate.amountRelation, "indeterminate");
+
 console.log("development environment tests passed");

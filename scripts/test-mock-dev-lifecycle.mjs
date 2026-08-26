@@ -90,6 +90,36 @@ function sendMessage(child, message) {
   });
 }
 
+function sendConsecutiveSignals(child, signal) {
+  let onMessage;
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      onMessage = (message) => {
+        if (
+          message?.type !==
+            "mock-runner-test-consecutive-signals-result" ||
+          message.signal !== signal
+        ) {
+          return;
+        }
+        child.removeListener("message", onMessage);
+        resolve(message);
+      };
+      child.on("message", onMessage);
+      child.send(
+        { type: "mock-runner-test-consecutive-signals", signal },
+        (error) => {
+          if (!error) return;
+          child.removeListener("message", onMessage);
+          reject(error);
+        }
+      );
+    }),
+    15_000,
+    `mock runner did not acknowledge consecutive ${signal}`
+  ).finally(() => child.removeListener("message", onMessage));
+}
+
 async function cleanupFailedCase(controller) {
   if (!controller || controller.hasExited()) return;
   try {
@@ -148,9 +178,54 @@ async function testRunnerSignal(signal, expectedExitCode) {
   }
 }
 
+async function testConsecutiveRunnerSignals(signal, expectedExitCode) {
+  await assertLoopbackPortAvailable(3000);
+  const env = createMockEnvironment();
+  env.MOCK_RUNNER_LIFECYCLE_TEST = "1";
+  let controller = null;
+  let completed = false;
+  try {
+    controller = await startOwnedProcess({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "scripts", "run-mock-dev.mjs")],
+      cwd: process.cwd(),
+      env,
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+      port: 3000,
+      gracefulTimeoutMs: 20_000,
+      forceTimeoutMs: 8_000,
+    });
+    assert.equal(
+      await waitForLoopbackPort(3000, true, START_TIMEOUT_MS),
+      true,
+      `mock runner did not start for consecutive ${signal}`
+    );
+
+    let observation = null;
+    const result = await controller.stop({
+      requestShutdown: async (child) => {
+        observation = await sendConsecutiveSignals(child, signal);
+      },
+    });
+    completed = true;
+    assert.deepEqual(observation?.listenerCounts, [1, 1]);
+    assert.equal(result.cleanup, "graceful");
+    assert.equal(result.code, expectedExitCode);
+    assert.equal(
+      await waitForLoopbackPort(3000, false, RELEASE_TIMEOUT_MS),
+      true
+    );
+    console.log(`mock runner consecutive ${signal} test passed`);
+  } finally {
+    if (!completed) await cleanupFailedCase(controller);
+  }
+}
+
 if (!forceOnly) {
   await testRunnerSignal("SIGINT", 130);
   await testRunnerSignal("SIGTERM", 143);
+  await testConsecutiveRunnerSignals("SIGINT", 130);
+  await testConsecutiveRunnerSignals("SIGTERM", 143);
 }
 
 if (!gracefulOnly) {

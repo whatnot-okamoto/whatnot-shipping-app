@@ -77,14 +77,14 @@ function getShippingCandidates(
   order: UnknownRecord,
   items: UnknownRecord[],
   statuses: string[]
-): { complete: boolean; values: number[] } {
+): { complete: boolean; malformed: boolean; values: number[] } {
   const values: number[] = [];
   let malformed = false;
 
   if ("shipping_fee" in order) {
-    const topLevel = optionalTopLevelAmount(order, "shipping_fee");
-    if (topLevel.known) values.push(topLevel.value);
-    else malformed = true;
+    const topLevel = asFiniteNumber(order.shipping_fee);
+    if (topLevel === null) malformed = true;
+    else values.push(topLevel);
   }
 
   if ("shipping_lines" in order) {
@@ -116,19 +116,20 @@ function getShippingCandidates(
         itemsComplete = false;
         break;
       }
-      const amount = optionalTopLevelAmount(item, "shipping_fee");
-      if (!amount.known) {
+      const amount = asFiniteNumber(item.shipping_fee);
+      if (amount === null) {
         malformed = true;
         itemsComplete = false;
         break;
       }
-      total += amount.value;
+      total += amount;
     }
     if (itemsComplete) values.push(total);
   }
 
   return {
     complete: values.length > 0 && !malformed && new Set(values).size === 1,
+    malformed,
     values: [...new Set(values)],
   };
 }
@@ -229,8 +230,9 @@ function deriveAmountRelation(
 
   // BASE公式のorder.total説明は送料の扱いを明示していないため、まず
   // 記載された式だけで説明できるか確認し、差額がある場合だけ送料を調べる。
-  if (orderTotal === subtotal) return "explained";
   const shipping = getShippingCandidates(order, items, statuses);
+  if (shipping.malformed) return "indeterminate";
+  if (orderTotal === subtotal) return "explained";
   if (!shipping.complete) return "indeterminate";
   return orderTotal === subtotal + shipping.values[0]
     ? "explained"

@@ -66,10 +66,27 @@ async function run() {
     ) {
       process.emit(message.signal);
     }
+    if (
+      process.env.MOCK_RUNNER_LIFECYCLE_TEST === "1" &&
+      message?.type === "mock-runner-test-consecutive-signals" &&
+      (message.signal === "SIGINT" || message.signal === "SIGTERM")
+    ) {
+      process.emit(message.signal);
+      const afterFirst = process.listenerCount(message.signal);
+      process.emit(message.signal);
+      const afterSecond = process.listenerCount(message.signal);
+      process.send?.({
+        type: "mock-runner-test-consecutive-signals-result",
+        signal: message.signal,
+        listenerCounts: [afterFirst, afterSecond],
+      });
+    }
   };
 
-  process.once("SIGINT", onSigint);
-  process.once("SIGTERM", onSigterm);
+  // cleanup完了までは同種シグナルを受け続け、2回目以降も冪等な
+  // shutdownへ流す。onceで解除するとOS既定動作がrunnerだけを終了し得る。
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
   process.once("uncaughtException", onUncaughtException);
   process.once("unhandledRejection", onUnhandledRejection);
   if (typeof process.send === "function") process.on("message", onTestMessage);
