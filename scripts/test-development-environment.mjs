@@ -95,7 +95,16 @@ const normal = analyzePartialCancellation({
   total: 1_100,
   shipping_lines: [{ shipping_fee: 100 }],
   order_items: [
-    { status: "ordered", price: 500, amount: 2, consumption_tax_rate: 10 },
+    {
+      status: "ordered",
+      price: 500,
+      amount: 2,
+      total: 1_000,
+      item_total: 1_000,
+      option_total: 0,
+      options: [],
+      consumption_tax_rate: 10,
+    },
   ],
 });
 assert.equal(normal.cancellationCandidate, "normal");
@@ -108,8 +117,26 @@ const partial = analyzePartialCancellation({
   shipping_lines: [{ shipping_fee: 100 }],
   order_discount: { discount: 20 },
   order_items: [
-    { status: "ordered", price: 500, amount: 2, consumption_tax_rate: 10 },
-    { status: "cancelled", price: 500, amount: 1, consumption_tax_rate: 8 },
+    {
+      status: "ordered",
+      price: 500,
+      amount: 2,
+      total: 1_000,
+      item_total: 1_000,
+      option_total: 0,
+      options: [],
+      consumption_tax_rate: 10,
+    },
+    {
+      status: "cancelled",
+      price: 500,
+      amount: 1,
+      total: 500,
+      item_total: 500,
+      option_total: 0,
+      options: [],
+      consumption_tax_rate: 8,
+    },
   ],
 });
 assert.equal(partial.cancellationCandidate, "partial_cancel");
@@ -128,6 +155,97 @@ const full = analyzePartialCancellation({
 assert.equal(full.cancellationCandidate, "full_cancel");
 assert.equal(full.amountRelation, "explained");
 
+const paidOptions = analyzePartialCancellation({
+  cancelled: null,
+  total: 7_100,
+  shipping_fee: 100,
+  order_items: [
+    {
+      status: "ordered",
+      price: 2_000,
+      amount: 2,
+      total: 7_000,
+      item_total: 4_000,
+      option_total: 3_000,
+      options: [{ price: 500 }, { price: 1_000 }],
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(paidOptions.amountRelation, "explained");
+
+const paidOptionsFromComponents = analyzePartialCancellation({
+  cancelled: null,
+  total: 7_100,
+  shipping_fee: 100,
+  order_items: [
+    {
+      status: "ordered",
+      price: 2_000,
+      amount: 2,
+      item_total: 4_000,
+      option_total: 3_000,
+      options: [{ price: 500 }, { price: 1_000 }],
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(paidOptionsFromComponents.amountRelation, "explained");
+
+const paidOptionsFromFields = analyzePartialCancellation({
+  cancelled: null,
+  total: 7_100,
+  shipping_fee: 100,
+  order_items: [
+    {
+      status: "ordered",
+      price: 2_000,
+      amount: 2,
+      options: [{ price: 500 }, { price: 1_000 }],
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(paidOptionsFromFields.amountRelation, "explained");
+
+const itemTotalOnly = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_000,
+  order_items: [
+    { status: "ordered", total: 1_000, consumption_tax_rate: 10 },
+  ],
+});
+assert.equal(itemTotalOnly.amountRelation, "explained");
+
+const conflictingItemTotals = analyzePartialCancellation({
+  cancelled: null,
+  total: 7_000,
+  order_items: [
+    {
+      status: "ordered",
+      price: 2_000,
+      amount: 2,
+      total: 7_000,
+      item_total: 4_000,
+      option_total: 3_000,
+      options: [],
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(conflictingItemTotals.amountRelation, "indeterminate");
+
+const alternateShippingRepresentations = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_100,
+  shipping_fee: 100,
+  shipping_lines: [],
+  order_items: [
+    { status: "ordered", total: 1_000, consumption_tax_rate: 10 },
+  ],
+});
+assert.equal(alternateShippingRepresentations.amountRelation, "indeterminate");
+
 const unknown = analyzePartialCancellation({
   cancelled: null,
   total: 1_000,
@@ -144,7 +262,16 @@ const unexplained = analyzePartialCancellation({
   total: 999,
   shipping_fee: 0,
   order_items: [
-    { status: "ordered", price: 1_000, amount: 1, consumption_tax_rate: 10 },
+    {
+      status: "ordered",
+      price: 1_000,
+      amount: 1,
+      total: 1_000,
+      item_total: 1_000,
+      option_total: 0,
+      options: [],
+      consumption_tax_rate: 10,
+    },
   ],
 });
 assert.equal(unexplained.amountRelation, "unexplained_difference");
@@ -155,5 +282,28 @@ const amountIndeterminate = analyzePartialCancellation({
   order_items: [{ status: "ordered", consumption_tax_rate: 10 }],
 });
 assert.equal(amountIndeterminate.amountRelation, "indeterminate");
+
+const optionAmountIndeterminate = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_100,
+  shipping_fee: 100,
+  order_items: [
+    { status: "ordered", price: 500, amount: 2, consumption_tax_rate: 10 },
+  ],
+});
+assert.equal(optionAmountIndeterminate.amountRelation, "indeterminate");
+
+const missingShippingIndeterminate = analyzePartialCancellation({
+  cancelled: null,
+  total: 1_100,
+  order_items: [
+    {
+      status: "ordered",
+      total: 1_000,
+      consumption_tax_rate: 10,
+    },
+  ],
+});
+assert.equal(missingShippingIndeterminate.amountRelation, "indeterminate");
 
 console.log("development environment tests passed");

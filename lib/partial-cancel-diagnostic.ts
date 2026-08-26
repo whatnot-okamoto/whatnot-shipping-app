@@ -73,20 +73,114 @@ function optionalTopLevelAmount(
     : { known: true, value: amount };
 }
 
-function getShippingAmount(
-  order: UnknownRecord
-): { known: boolean; value: number } {
-  const shippingLines = order.shipping_lines;
-  if (Array.isArray(shippingLines) && shippingLines.length > 0) {
-    let total = 0;
-    for (const line of shippingLines) {
-      const amount = asFiniteNumber(asRecord(line)?.shipping_fee);
-      if (amount === null) return { known: false, value: 0 };
-      total += amount;
-    }
-    return { known: true, value: total };
+function getShippingCandidates(
+  order: UnknownRecord,
+  items: UnknownRecord[],
+  statuses: string[]
+): { complete: boolean; values: number[] } {
+  const values: number[] = [];
+  let malformed = false;
+
+  if ("shipping_fee" in order) {
+    const topLevel = optionalTopLevelAmount(order, "shipping_fee");
+    if (topLevel.known) values.push(topLevel.value);
+    else malformed = true;
   }
-  return optionalTopLevelAmount(order, "shipping_fee");
+
+  if ("shipping_lines" in order) {
+    if (Array.isArray(order.shipping_lines)) {
+      let total = 0;
+      let linesComplete = true;
+      for (const line of order.shipping_lines) {
+        const amount = asFiniteNumber(asRecord(line)?.shipping_fee);
+        if (amount === null) {
+          malformed = true;
+          linesComplete = false;
+          break;
+        }
+        total += amount;
+      }
+      if (linesComplete) values.push(total);
+    } else if (order.shipping_lines !== null) {
+      malformed = true;
+    }
+  }
+
+  const activeItems = items.filter((_, index) => statuses[index] !== "cancelled");
+  if (activeItems.some((item) => "shipping_fee" in item)) {
+    let total = 0;
+    let itemsComplete = true;
+    for (const item of activeItems) {
+      if (!("shipping_fee" in item)) {
+        malformed = true;
+        itemsComplete = false;
+        break;
+      }
+      const amount = optionalTopLevelAmount(item, "shipping_fee");
+      if (!amount.known) {
+        malformed = true;
+        itemsComplete = false;
+        break;
+      }
+      total += amount.value;
+    }
+    if (itemsComplete) values.push(total);
+  }
+
+  return {
+    complete: values.length > 0 && !malformed && new Set(values).size === 1,
+    values: [...new Set(values)],
+  };
+}
+
+function getOrderItemAmount(
+  item: UnknownRecord
+): { known: boolean; value: number } {
+  const candidates: number[] = [];
+  const total = asFiniteNumber(item.total);
+  if (total !== null) candidates.push(total);
+
+  const itemTotal = asFiniteNumber(item.item_total);
+  const optionTotal = asFiniteNumber(item.option_total);
+  if (itemTotal !== null && optionTotal !== null) {
+    candidates.push(itemTotal + optionTotal);
+  }
+
+  const price = asFiniteNumber(item.price);
+  const amount = asFiniteNumber(item.amount);
+  const calculatedItemTotal =
+    price !== null && amount !== null ? price * amount : null;
+  let calculatedOptionTotal: number | null = null;
+  if (Array.isArray(item.options) && amount !== null) {
+    let optionUnitTotal = 0;
+    let optionsComplete = true;
+    for (const option of item.options) {
+      const optionPrice = asFiniteNumber(asRecord(option)?.price);
+      if (optionPrice === null) {
+        optionsComplete = false;
+        break;
+      }
+      optionUnitTotal += optionPrice;
+    }
+    if (optionsComplete) calculatedOptionTotal = optionUnitTotal * amount;
+  }
+
+  if (calculatedItemTotal !== null && calculatedOptionTotal !== null) {
+    candidates.push(calculatedItemTotal + calculatedOptionTotal);
+  }
+  if (itemTotal !== null && calculatedOptionTotal !== null) {
+    candidates.push(itemTotal + calculatedOptionTotal);
+  }
+  if (calculatedItemTotal !== null && optionTotal !== null) {
+    candidates.push(calculatedItemTotal + optionTotal);
+  }
+
+  // 公式サンプルにも経路間の数値競合があるため、完全な経路が複数ある
+  // 場合は一致を確認し、一意に定まらなければ判定不能とする。
+  const uniqueCandidates = [...new Set(candidates)];
+  return uniqueCandidates.length === 1
+    ? { known: true, value: uniqueCandidates[0] }
+    : { known: false, value: 0 };
 }
 
 function deriveAmountRelation(
@@ -104,10 +198,9 @@ function deriveAmountRelation(
     const status = statuses[index];
     if (!KNOWN_ITEM_STATUSES.has(status as never)) return "indeterminate";
     if (status === "cancelled") continue;
-    const price = asFiniteNumber(items[index].price);
-    const amount = asFiniteNumber(items[index].amount);
-    if (price === null || amount === null) return "indeterminate";
-    activeItemTotal += price * amount;
+    const itemAmount = getOrderItemAmount(items[index]);
+    if (!itemAmount.known) return "indeterminate";
+    activeItemTotal += itemAmount.value;
   }
 
   const discount = optionalNestedAmount(order, "order_discount", "discount");
@@ -122,8 +215,7 @@ function deriveAmountRelation(
     "adjusted_amount"
   );
   const codFee = optionalTopLevelAmount(order, "cod_fee");
-  const shipping = getShippingAmount(order);
-  const components = [discount, coinDiscount, adjustment, codFee, shipping];
+  const components = [discount, coinDiscount, adjustment, codFee];
   if (components.some((component) => !component.known)) {
     return "indeterminate";
   }
@@ -135,10 +227,12 @@ function deriveAmountRelation(
     adjustment.value +
     codFee.value;
 
-  // BASE公式説明と実データ差異に備え、送料を含む式・含まない式の
-  // どちらかで説明できればexplainedとする。どちらにも一致しない場合も
-  // 「不一致」と断定せず、未説明差額ありとして扱う。
-  return orderTotal === subtotal || orderTotal === subtotal + shipping.value
+  // BASE公式のorder.total説明は送料の扱いを明示していないため、まず
+  // 記載された式だけで説明できるか確認し、差額がある場合だけ送料を調べる。
+  if (orderTotal === subtotal) return "explained";
+  const shipping = getShippingCandidates(order, items, statuses);
+  if (!shipping.complete) return "indeterminate";
+  return orderTotal === subtotal + shipping.values[0]
     ? "explained"
     : "unexplained_difference";
 }

@@ -1,51 +1,118 @@
-import { spawn } from "node:child_process";
-import path from "node:path";
+import {
+  assertLoopbackPortAvailable,
+  attachInteractiveEtx,
+  startMockDevServer,
+  waitForLoopbackPort,
+} from "./mock-dev-runner.mjs";
 
-const env = { ...process.env };
-for (const name of [
-  "BASE_API_TOKEN",
-  "BASE_API_REFRESH_TOKEN",
-  "BASE_API_BASE_URL",
-  "BASE_CHECK_ORDER_UNIQUE_KEY",
-  "BASE_READONLY_ACCESS_TOKEN",
-  "BASE_READONLY_CLIENT_ID",
-  "BASE_READONLY_CLIENT_SECRET",
-  "BASE_READONLY_REDIRECT_URI",
-  "BASE_CLIENT_ID",
-  "BASE_CLIENT_SECRET",
-  "BASE_REDIRECT_URI",
-  "UPSTASH_REDIS_REST_URL",
-  "UPSTASH_REDIS_REST_TOKEN",
-]) {
-  delete env[name];
+let activeController = null;
+
+async function run() {
+  await assertLoopbackPortAvailable(3000);
+
+  const controller = await startMockDevServer({ interactiveInput: true });
+  activeController = controller;
+  let shutdownPromise = null;
+  let requestedExitCode = null;
+  let input = { restore() {} };
+
+  const restoreInput = () => {
+    try {
+      input.restore();
+    } catch (error) {
+      console.error("mock runner could not restore stdin state:", error);
+      requestedExitCode = 1;
+      process.exitCode = 1;
+    }
+  };
+
+  const shutdown = (reason, signal, exitCode) => {
+    if (shutdownPromise) return shutdownPromise;
+    requestedExitCode = exitCode;
+    restoreInput();
+    shutdownPromise = (async () => {
+      try {
+        await controller.stop({ signal });
+        const released = await waitForLoopbackPort(3000, false, 3_000);
+        if (!released) {
+          throw new Error(
+            `PID ${controller.identity.childPid} exited, but 127.0.0.1:3000 is still listening. No process was targeted by port.`
+          );
+        }
+      } catch (error) {
+        console.error(`mock runner cleanup failed after ${reason}:`, error);
+        controller.unref();
+        requestedExitCode = 1;
+      }
+    })();
+    return shutdownPromise;
+  };
+
+  const onSigint = () => void shutdown("SIGINT", "SIGINT", 130);
+  const onSigterm = () => void shutdown("SIGTERM", "SIGTERM", 143);
+  const onUncaughtException = (error) => {
+    console.error("mock runner uncaught exception:", error);
+    void shutdown("uncaughtException", "SIGTERM", 1);
+  };
+  const onUnhandledRejection = (reason) => {
+    console.error("mock runner unhandled rejection:", reason);
+    void shutdown("unhandledRejection", "SIGTERM", 1);
+  };
+  const onTestMessage = (message) => {
+    if (
+      process.env.MOCK_RUNNER_LIFECYCLE_TEST === "1" &&
+      message?.type === "mock-runner-test-signal" &&
+      (message.signal === "SIGINT" || message.signal === "SIGTERM")
+    ) {
+      process.emit(message.signal);
+    }
+  };
+
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  process.once("uncaughtException", onUncaughtException);
+  process.once("unhandledRejection", onUnhandledRejection);
+  if (typeof process.send === "function") process.on("message", onTestMessage);
+  input = attachInteractiveEtx(controller, () =>
+    void shutdown("TTY ETX", "SIGINT", 130)
+  );
+
+  try {
+    const result = await controller.exited;
+    if (shutdownPromise) await shutdownPromise;
+    else {
+      const released = await waitForLoopbackPort(3000, false, 3_000);
+      if (!released) {
+        console.error(
+          `Child PID ${controller.identity.childPid} exited unexpectedly, but 127.0.0.1:3000 is still listening. No process was targeted by port.`
+        );
+        requestedExitCode = 1;
+      }
+    }
+    process.exitCode =
+      requestedExitCode ?? result.code ?? (result.signal === null ? 0 : 1);
+  } finally {
+    restoreInput();
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("uncaughtException", onUncaughtException);
+    process.removeListener("unhandledRejection", onUnhandledRejection);
+    process.removeListener("message", onTestMessage);
+  }
 }
 
-Object.assign(env, {
-  APP_ENVIRONMENT: "local",
-  BASE_DATA_MODE: "mock",
-  APP_STORE_MODE: "memory",
-  ADMIN_USERNAME: "mock-admin",
-  ADMIN_PASSWORD: "mock-local-only",
-  NEXTAUTH_SECRET: "mock-local-nextauth-secret-not-for-shared-use",
-  NEXTAUTH_URL: "http://127.0.0.1:3000",
-  RECEIPT_SHARE_SECRET: "mock-local-receipt-secret-not-for-shared-use",
-});
-
-const nextBin = path.join(
-  process.cwd(),
-  "node_modules",
-  "next",
-  "dist",
-  "bin",
-  "next"
-);
-const child = spawn(
-  process.execPath,
-  [nextBin, "dev", "--hostname", "127.0.0.1", "--port", "3000"],
-  { env, stdio: "inherit" }
-);
-
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code ?? 1);
+run().catch(async (error) => {
+  console.error(error);
+  if (activeController && !activeController.hasExited()) {
+    try {
+      await activeController.stop({ signal: "SIGTERM" });
+    } catch (cleanupError) {
+      activeController.unref();
+      console.error(
+        "mock runner top-level cleanup could not verify or stop its owned child:",
+        cleanupError
+      );
+    }
+  }
+  process.exitCode = 1;
 });
