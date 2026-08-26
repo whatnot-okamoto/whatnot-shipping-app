@@ -379,8 +379,12 @@ export default function ReceiptsPage() {
                   <dd className="mt-1">{dispatchStatusLabel(order.dispatchStatus)}</dd>
                 </div>
                 <div>
-                  <dt className="text-gray-500">キャンセル</dt>
-                  <dd className="mt-1">{order.cancelled === null ? "なし" : "あり"}</dd>
+                  <dt className="text-gray-500">BASEキャンセル情報</dt>
+                  <dd className="mt-1">
+                    {order.cancelled === null
+                      ? "なし（商品単位は未判定）"
+                      : "あり（発行前にBASEで確認）"}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-gray-500">決済方法</dt>
