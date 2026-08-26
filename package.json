@@ -4,10 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:mock": "node scripts/run-mock-dev.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:receipt-share": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-receipt-share-token.mjs"
+    "test:receipt-share": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-receipt-share-token.mjs",
+    "test:development-environment": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-development-environment.mjs",
+    "diagnose:partial-cancel": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/diagnose-partial-cancel.mjs"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",

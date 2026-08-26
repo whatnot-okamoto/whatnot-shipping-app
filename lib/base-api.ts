@@ -2,9 +2,15 @@
 // 注文取得・出荷完了書き戻しなど、BASE APIとの通信はすべてここ経由で行う
 
 import { redis } from "@/lib/upstash";
+import {
+  assertBaseRequestAllowed,
+  resolveRuntimeConfig,
+  type BaseDataMode,
+} from "@/lib/runtime-mode";
 
 const BASE_API_BASE_URL =
   process.env.BASE_API_BASE_URL ?? "https://api.thebase.in/1";
+const BASE_READONLY_API_BASE_URL = "https://api.thebase.in/1";
 
 // ============================================================================
 // 型定義（ORDER-FIELD-01準拠）
@@ -251,6 +257,13 @@ type StoredToken = {
  * Upstash の auth:base_token を参照し、必要に応じて自動更新する。
  */
 export async function getBaseToken(): Promise<string> {
+  const runtimeConfig = resolveRuntimeConfig();
+  if (runtimeConfig.baseDataMode !== "production") {
+    throw new Error(
+      "[base-api] Production token management is unavailable outside production mode."
+    );
+  }
+
   const stored = await redis.get<StoredToken>("auth:base_token");
 
   if (stored) {
@@ -267,6 +280,25 @@ export async function getBaseToken(): Promise<string> {
     return envToken;
   }
   throw new Error("BASE API token not found: Upstash未投入かつ BASE_API_TOKEN も未設定です");
+}
+
+function getReadonlyBaseToken(): string {
+  const token = process.env.BASE_READONLY_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error(
+      "[base-api] BASE_READONLY_ACCESS_TOKEN is required in readonly mode."
+    );
+  }
+  return token;
+}
+
+function getBaseUrl(mode: BaseDataMode): string {
+  // readonlyは診断用tokenの送信先を公式BASE APIへ固定する。
+  return mode === "readonly" ? BASE_READONLY_API_BASE_URL : BASE_API_BASE_URL;
+}
+
+async function getTokenForMode(mode: BaseDataMode): Promise<string> {
+  return mode === "readonly" ? getReadonlyBaseToken() : getBaseToken();
 }
 
 /**
@@ -347,19 +379,24 @@ async function refreshBaseToken(): Promise<string> {
  * 詳細が必要な場合は fetchOrderDetail(unique_key) を呼ぶこと。
  */
 export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
-  if (!process.env.BASE_API_TOKEN) {
-    // !! 開発補助用モックにフォールバック（本番経路ではない。下部コメント参照）
+  const { baseDataMode } = resolveRuntimeConfig();
+  if (baseDataMode === "mock") {
     return getMockOrderSummaries();
   }
 
-  const token = await getBaseToken();
-  const url = `${BASE_API_BASE_URL}/orders?dispatch_status=ordered&limit=100`;
+  assertBaseRequestAllowed(baseDataMode, "GET");
+  const token = await getTokenForMode(baseDataMode);
+  const url = `${getBaseUrl(baseDataMode)}/orders?dispatch_status=ordered&limit=100`;
   const res = await fetch(url, {
+    method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
 
   if (!res.ok) {
+    if (baseDataMode === "readonly") {
+      throw new Error(`BASE API error: HTTP ${res.status}`);
+    }
     const body = await res.text();
     throw new Error(`BASE API error: ${res.status} ${body}`);
   }
@@ -374,18 +411,24 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
  * 取得失敗時はエラーをスロー（呼び出し側でキャッチすること）。
  */
 export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
-  if (!process.env.BASE_API_TOKEN) {
+  const { baseDataMode } = resolveRuntimeConfig();
+  if (baseDataMode === "mock") {
     return getMockOrderDetail(uniqueKey);
   }
 
-  const token = await getBaseToken();
-  const url = `${BASE_API_BASE_URL}/orders/detail/${uniqueKey}`;
+  assertBaseRequestAllowed(baseDataMode, "GET");
+  const token = await getTokenForMode(baseDataMode);
+  const url = `${getBaseUrl(baseDataMode)}/orders/detail/${uniqueKey}`;
   const res = await fetch(url, {
+    method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
 
   if (!res.ok) {
+    if (baseDataMode === "readonly") {
+      throw new Error(`BASE API detail error: HTTP ${res.status}`);
+    }
     const body = await res.text();
     throw new Error(`BASE API detail error [${uniqueKey}]: ${res.status} ${body}`);
   }
@@ -397,8 +440,9 @@ export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
 // ============================================================================
 // 開発補助用モックデータ
 //
-// 用途: BASE_API_TOKEN 未設定時（ローカル開発・CI環境）の動作確認専用
-// 注意: 本番相当の挙動ではない。BASE_API_TOKEN が設定されると呼び出されない。
+// 用途: APP_ENVIRONMENT=local / BASE_DATA_MODE=mock / APP_STORE_MODE=memory
+//       の明示的なローカル開発専用。
+// 注意: 本番相当の永続性・同時実行保証はなく、外部接続へfallbackしない。
 // ============================================================================
 
 function getMockOrderSummaries(): BaseOrderSummary[] {
