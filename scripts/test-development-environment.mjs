@@ -16,6 +16,7 @@ assert.deepEqual(
     appEnvironment: "local",
     baseDataMode: "mock",
     appStoreMode: "memory",
+    vercelEnvironment: null,
   }
 );
 assert.deepEqual(
@@ -23,11 +24,14 @@ assert.deepEqual(
     APP_ENVIRONMENT: "development",
     BASE_DATA_MODE: "readonly",
     APP_STORE_MODE: "upstash",
+    VERCEL_ENV: "preview",
+    VERCEL_GIT_COMMIT_REF: "codex/development",
   }),
   {
     appEnvironment: "development",
     baseDataMode: "readonly",
     appStoreMode: "upstash",
+    vercelEnvironment: "preview",
   }
 );
 assert.deepEqual(
@@ -35,11 +39,13 @@ assert.deepEqual(
     APP_ENVIRONMENT: "production",
     BASE_DATA_MODE: "production",
     APP_STORE_MODE: "upstash",
+    VERCEL_ENV: "production",
   }),
   {
     appEnvironment: "production",
     baseDataMode: "production",
     appStoreMode: "upstash",
+    vercelEnvironment: "production",
   }
 );
 
@@ -52,6 +58,58 @@ assert.throws(
       APP_STORE_MODE: "memory",
     }),
   /Unsafe mode combination/
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "development",
+      BASE_DATA_MODE: "readonly",
+      APP_STORE_MODE: "upstash",
+      VERCEL_ENV: "development",
+      VERCEL_GIT_COMMIT_REF: "codex/development",
+    }),
+  /requires VERCEL_ENV=preview/
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "development",
+      BASE_DATA_MODE: "readonly",
+      APP_STORE_MODE: "upstash",
+      VERCEL_ENV: "preview",
+      VERCEL_GIT_COMMIT_REF: "feature/other",
+    }),
+  /restricted to codex\/development/
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "development",
+      BASE_DATA_MODE: "readonly",
+      APP_STORE_MODE: "upstash",
+      VERCEL_ENV: "preview",
+    }),
+  /restricted to codex\/development/
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "production",
+      BASE_DATA_MODE: "production",
+      APP_STORE_MODE: "upstash",
+      VERCEL_ENV: "preview",
+    }),
+  /requires VERCEL_ENV=production/
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "local",
+      BASE_DATA_MODE: "mock",
+      APP_STORE_MODE: "memory",
+      VERCEL_ENV: "development",
+    }),
+  /only allowed outside Vercel/
 );
 assert.throws(
   () => assertBaseRequestAllowed("mock", "GET"),

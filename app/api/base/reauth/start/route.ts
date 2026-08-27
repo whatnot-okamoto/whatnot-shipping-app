@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
+import {
+  isProductionRuntime,
+  resolveRuntimeConfig,
+} from "@/lib/runtime-mode";
 import { redis } from "@/lib/upstash";
 
 export async function GET(req: Request) {
+  const runtimeConfig = resolveRuntimeConfig();
+  if (!isProductionRuntime(runtimeConfig)) {
+    return new Response(null, { status: 404 });
+  }
+
   const authError = await requireAuth(req);
   if (authError) return authError;
 

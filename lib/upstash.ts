@@ -1,5 +1,9 @@
 import { Redis } from "@upstash/redis";
 import { getLocalMemoryRedis } from "@/lib/memory-redis";
+import {
+  createDevelopmentRedis,
+  createProductionRedis,
+} from "@/lib/namespaced-redis";
 import type { RedisLike } from "@/lib/redis-like";
 import { resolveRuntimeConfig } from "@/lib/runtime-mode";
 
@@ -16,11 +20,15 @@ function createRedisClient(): RedisLike {
     );
   }
 
-  // Appが使用するRedis command subsetはRedisLikeで明示し、外部client型を境界内に閉じ込める。
-  return new Redis({
+  // raw clientはこの境界からexportせず、必ずruntime別のkey policyを通す。
+  const target = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
   }) as unknown as RedisLike;
+
+  return runtimeConfig.appEnvironment === "development"
+    ? createDevelopmentRedis(target)
+    : createProductionRedis(target);
 }
 
 export const redis = createRedisClient();

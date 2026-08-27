@@ -3,6 +3,14 @@
 // 実行: npx tsx scripts/init-token.ts
 
 import dotenv from "dotenv";
+import {
+  assertProductionRuntime,
+  resolveRuntimeConfig,
+} from "../lib/runtime-mode";
+
+const runtimeConfig = resolveRuntimeConfig();
+assertProductionRuntime(runtimeConfig, "BASE token initialization");
+
 dotenv.config({ path: ".env.local" });
 
 const access_token = process.env.BASE_API_TOKEN;

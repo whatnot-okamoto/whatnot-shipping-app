@@ -1,7 +1,16 @@
 import { redirect } from "next/navigation";
+import {
+  isProductionRuntime,
+  resolveRuntimeConfig,
+} from "@/lib/runtime-mode";
 import { redis } from "@/lib/upstash";
 
 export async function GET(req: Request) {
+  const runtimeConfig = resolveRuntimeConfig();
+  if (!isProductionRuntime(runtimeConfig)) {
+    return new Response(null, { status: 404 });
+  }
+
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");

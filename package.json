@@ -10,6 +10,7 @@
     "lint": "eslint",
     "test:receipt-share": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-receipt-share-token.mjs",
     "test:development-environment": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-development-environment.mjs",
+    "test:redis-namespace": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-redis-namespace.mjs",
     "test:mock-dev-lifecycle": "node scripts/test-mock-dev-lifecycle.mjs",
     "diagnose:partial-cancel": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/diagnose-partial-cancel.mjs"
   },
