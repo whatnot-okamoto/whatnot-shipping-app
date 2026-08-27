@@ -17,6 +17,7 @@ import { getCurrentSession } from "@/lib/session-store";
 import { fetchOrderedOrders } from "@/lib/base-api";
 import { getRefetchState } from "@/lib/refetch-store";
 import { requireAuth } from "@/lib/auth";
+import { BaseReadonlyReauthorizationRequiredError } from "@/lib/base-readonly-oauth";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -68,6 +69,17 @@ export async function GET(req: Request) {
       baseOpenUniqueKeys = new Set(baseOpenOrders.map((o) => o.unique_key));
       baseOpenOrderCount = baseOpenOrders.length;
     } catch (e) {
+      if (e instanceof BaseReadonlyReauthorizationRequiredError) {
+        return Response.json(
+          {
+            success: false,
+            status: "base_readonly_reauth_required",
+            error: "Development用BASE read-only認証が必要です。",
+            reauth_url: "/orders/readonly-reauth",
+          },
+          { status: 503 }
+        );
+      }
       const message = e instanceof Error ? e.message : "Unknown error";
       return Response.json(
         { success: false, status: "base_api_error", error: `BASE APIの取得に失敗しました: ${message}` },

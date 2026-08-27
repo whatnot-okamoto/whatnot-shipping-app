@@ -2,6 +2,7 @@
 // 注文取得・出荷完了書き戻しなど、BASE APIとの通信はすべてここ経由で行う
 
 import { redis } from "@/lib/upstash";
+import { getBaseReadonlyOAuthModule } from "@/lib/base-readonly-oauth-runtime";
 import {
   assertBaseRequestAllowed,
   resolveRuntimeConfig,
@@ -282,23 +283,15 @@ export async function getBaseToken(): Promise<string> {
   throw new Error("BASE API token not found: Upstash未投入かつ BASE_API_TOKEN も未設定です");
 }
 
-function getReadonlyBaseToken(): string {
-  const token = process.env.BASE_READONLY_ACCESS_TOKEN;
-  if (!token) {
-    throw new Error(
-      "[base-api] BASE_READONLY_ACCESS_TOKEN is required in readonly mode."
-    );
-  }
-  return token;
-}
-
 function getBaseUrl(mode: BaseDataMode): string {
-  // readonlyは診断用tokenの送信先を公式BASE APIへ固定する。
+  // readonlyはDevelopment専用OAuth tokenの送信先を公式BASE APIへ固定する。
   return mode === "readonly" ? BASE_READONLY_API_BASE_URL : BASE_API_BASE_URL;
 }
 
 async function getTokenForMode(mode: BaseDataMode): Promise<string> {
-  return mode === "readonly" ? getReadonlyBaseToken() : getBaseToken();
+  return mode === "readonly"
+    ? getBaseReadonlyOAuthModule().getAccessToken()
+    : getBaseToken();
 }
 
 /**

@@ -5,6 +5,15 @@ export type VercelEnvironment = "development" | "preview" | "production";
 
 export const DEVELOPMENT_PREVIEW_BRANCH = "codex/development";
 
+const FORBIDDEN_DEVELOPMENT_ENVIRONMENT_VARIABLES = [
+  "BASE_READONLY_ACCESS_TOKEN",
+  "BASE_CLIENT_ID",
+  "BASE_CLIENT_SECRET",
+  "BASE_REDIRECT_URI",
+  "BASE_API_TOKEN",
+  "BASE_API_REFRESH_TOKEN",
+] as const;
+
 export type RuntimeConfig = {
   appEnvironment: AppEnvironment;
   baseDataMode: BaseDataMode;
@@ -103,6 +112,13 @@ export function resolveRuntimeConfig(
         `[runtime-mode] Development Preview is restricted to ${DEVELOPMENT_PREVIEW_BRANCH}.`
       );
     }
+    for (const name of FORBIDDEN_DEVELOPMENT_ENVIRONMENT_VARIABLES) {
+      if (env[name] !== undefined) {
+        throw new Error(
+          `[runtime-mode] ${name} must not be configured in the Development Preview runtime.`
+        );
+      }
+    }
   }
 
   if (
@@ -129,6 +145,26 @@ export function isProductionRuntime(config: RuntimeConfig): boolean {
     config.appStoreMode === "upstash" &&
     config.vercelEnvironment === "production"
   );
+}
+
+export function isDevelopmentRuntime(config: RuntimeConfig): boolean {
+  return (
+    config.appEnvironment === "development" &&
+    config.baseDataMode === "readonly" &&
+    config.appStoreMode === "upstash" &&
+    config.vercelEnvironment === "preview"
+  );
+}
+
+export function assertDevelopmentRuntime(
+  config: RuntimeConfig,
+  operation: string
+): void {
+  if (!isDevelopmentRuntime(config)) {
+    throw new Error(
+      `[runtime-mode] ${operation} is only available in the validated Development Preview runtime.`
+    );
+  }
 }
 
 export function assertProductionRuntime(

@@ -88,6 +88,38 @@ assert.throws(
       BASE_DATA_MODE: "readonly",
       APP_STORE_MODE: "upstash",
       VERCEL_ENV: "preview",
+      VERCEL_GIT_COMMIT_REF: "codex/development",
+      BASE_READONLY_ACCESS_TOKEN: "",
+    }),
+  /BASE_READONLY_ACCESS_TOKEN must not be configured/
+);
+for (const productionVariable of [
+  "BASE_CLIENT_ID",
+  "BASE_CLIENT_SECRET",
+  "BASE_REDIRECT_URI",
+  "BASE_API_TOKEN",
+  "BASE_API_REFRESH_TOKEN",
+]) {
+  assert.throws(
+    () =>
+      resolveRuntimeConfig({
+        APP_ENVIRONMENT: "development",
+        BASE_DATA_MODE: "readonly",
+        APP_STORE_MODE: "upstash",
+        VERCEL_ENV: "preview",
+        VERCEL_GIT_COMMIT_REF: "codex/development",
+        [productionVariable]: "production-value-must-not-fallback",
+      }),
+    new RegExp(`${productionVariable} must not be configured`)
+  );
+}
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      APP_ENVIRONMENT: "development",
+      BASE_DATA_MODE: "readonly",
+      APP_STORE_MODE: "upstash",
+      VERCEL_ENV: "preview",
     }),
   /restricted to codex\/development/
 );

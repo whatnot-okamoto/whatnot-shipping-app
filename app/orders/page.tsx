@@ -36,6 +36,7 @@ type OrdersApiResponse = {
   orders: Order[];
   meta: Meta;
   error?: string;
+  reauth_url?: string;
 };
 
 type RefetchApiResponse = {
@@ -117,6 +118,7 @@ export default function OrdersPage() {
   });
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [readonlyReauthUrl, setReadonlyReauthUrl] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [isRefetching, setIsRefetching] = useState(false);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
@@ -133,6 +135,11 @@ export default function OrdersPage() {
     const data = (await res.json()) as OrdersApiResponse;
     if (!data.success) {
       setFetchError(data.error ?? "注文一覧の取得に失敗しました");
+      setReadonlyReauthUrl(
+        data.status === "base_readonly_reauth_required"
+          ? (data.reauth_url ?? "/orders/readonly-reauth")
+          : null
+      );
       return;
     }
     setOrders(data.orders);
@@ -180,7 +187,8 @@ export default function OrdersPage() {
   }, [fetchCurrentSession, fetchOrdersList]);
 
   useEffect(() => {
-    loadPage()
+    void Promise.resolve()
+      .then(loadPage)
       .catch(() => setFetchError("ネットワークエラーが発生しました"))
       .finally(() => setLoading(false));
   }, [loadPage]);
@@ -299,6 +307,14 @@ export default function OrdersPage() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <p className="text-red-600 font-medium text-sm">{fetchError}</p>
+          {readonlyReauthUrl && (
+            <a
+              href={readonlyReauthUrl}
+              className="mt-3 block text-sm text-blue-600 underline"
+            >
+              Development read-only認証へ進む
+            </a>
+          )}
           <button
             onClick={() => window.location.reload()}
             className="mt-3 text-sm text-blue-600 underline"

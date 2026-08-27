@@ -11,6 +11,11 @@ import type {
 export const DEVELOPMENT_REDIS_NAMESPACE = "dev:v1:";
 
 const RESERVED_DEVELOPMENT_PREFIX = "dev:";
+const DEVELOPMENT_REDIS_BRAND = Symbol("DevelopmentRedisLike");
+
+export interface DevelopmentRedisLike extends RedisLike {
+  readonly [DEVELOPMENT_REDIS_BRAND]: true;
+}
 
 function assertLogicalKey(key: string): void {
   if (!key) {
@@ -135,7 +140,7 @@ class GuardedRedis implements RedisLike {
   }
 }
 
-export function createDevelopmentRedis(target: RedisLike): RedisLike {
+export function createDevelopmentRedis(target: RedisLike): DevelopmentRedisLike {
   const policy: KeyPolicy = {
     key: (logicalKey) => {
       assertLogicalKey(logicalKey);
@@ -156,7 +161,28 @@ export function createDevelopmentRedis(target: RedisLike): RedisLike {
       return logicalKey;
     },
   };
-  return new GuardedRedis(target, policy);
+  const guarded = new GuardedRedis(target, policy) as unknown as DevelopmentRedisLike;
+  Object.defineProperty(guarded, DEVELOPMENT_REDIS_BRAND, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return guarded;
+}
+
+export function assertDevelopmentRedis(
+  target: RedisLike
+): asserts target is DevelopmentRedisLike {
+  if (
+    typeof target !== "object" ||
+    target === null ||
+    !(DEVELOPMENT_REDIS_BRAND in target)
+  ) {
+    throw new Error(
+      "[redis-namespace] Development OAuth requires the namespaced Development Redis adapter."
+    );
+  }
 }
 
 export function createProductionRedis(target: RedisLike): RedisLike {
