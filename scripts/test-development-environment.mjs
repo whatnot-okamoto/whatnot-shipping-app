@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   assertBaseRequestAllowed,
+  matchesDevelopmentPreviewRuntimeIdentity,
   resolveRuntimeConfig,
 } from "../lib/runtime-mode.ts";
 import { MemoryRedis } from "../lib/memory-redis.ts";
@@ -46,6 +47,82 @@ assert.deepEqual(
     baseDataMode: "production",
     appStoreMode: "upstash",
     vercelEnvironment: "production",
+  }
+);
+
+const developmentPreviewIdentity = {
+  APP_ENVIRONMENT: "development",
+  BASE_DATA_MODE: "readonly",
+  APP_STORE_MODE: "upstash",
+  VERCEL_ENV: "preview",
+  VERCEL_GIT_COMMIT_REF: "codex/development",
+};
+assert.equal(
+  matchesDevelopmentPreviewRuntimeIdentity(developmentPreviewIdentity),
+  true
+);
+assert.equal(
+  matchesDevelopmentPreviewRuntimeIdentity({
+    APP_ENVIRONMENT: "local",
+    BASE_DATA_MODE: "mock",
+    APP_STORE_MODE: "memory",
+  }),
+  false
+);
+assert.equal(
+  matchesDevelopmentPreviewRuntimeIdentity({
+    APP_ENVIRONMENT: "production",
+    BASE_DATA_MODE: "production",
+    APP_STORE_MODE: "upstash",
+    VERCEL_ENV: "production",
+  }),
+  false
+);
+assert.equal(matchesDevelopmentPreviewRuntimeIdentity({}), false);
+assert.equal(
+  matchesDevelopmentPreviewRuntimeIdentity({
+    ...developmentPreviewIdentity,
+    VERCEL_GIT_COMMIT_REF: "feature/other",
+  }),
+  false
+);
+
+const unexpectedIdentityError = new TypeError("unexpected identity failure");
+const unexpectedIdentityEnvironment = new Proxy(developmentPreviewIdentity, {
+  get(target, property, receiver) {
+    if (property === "APP_ENVIRONMENT") throw unexpectedIdentityError;
+    return Reflect.get(target, property, receiver);
+  },
+});
+assert.throws(
+  () => matchesDevelopmentPreviewRuntimeIdentity(unexpectedIdentityEnvironment),
+  (error) => error === unexpectedIdentityError
+);
+
+assert.throws(
+  () => resolveRuntimeConfig({}),
+  (error) => {
+    assert.equal(error?.constructor, Error);
+    assert.equal(
+      error.message,
+      "[runtime-mode] APP_ENVIRONMENT is required. Refusing to choose an external connection mode implicitly."
+    );
+    return true;
+  }
+);
+assert.throws(
+  () =>
+    resolveRuntimeConfig({
+      ...developmentPreviewIdentity,
+      BASE_READONLY_ACCESS_TOKEN: "",
+    }),
+  (error) => {
+    assert.equal(error?.constructor, Error);
+    assert.equal(
+      error.message,
+      "[runtime-mode] BASE_READONLY_ACCESS_TOKEN must not be configured in the Development Preview runtime."
+    );
+    return true;
   }
 );
 

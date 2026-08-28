@@ -14,6 +14,7 @@ import {
   createBaseReadonlyOAuthControl,
 } from "../lib/base-readonly-oauth-control.ts";
 import { updateAdminSessionNonce } from "../lib/admin-session-nonce.ts";
+import { handleBaseReadonlyOAuthPreflight } from "../lib/base-readonly-oauth-preflight.ts";
 import { MemoryRedis } from "../lib/memory-redis.ts";
 import {
   createDevelopmentRedis,
@@ -53,6 +54,144 @@ const validTokenBody = {
   token_type: "Bearer",
   expires_in: 3600,
 };
+
+const preflightRequest = new Request(
+  "https://preview.example.test/api/base/readonly-reauth/preflight"
+);
+const preflightIdentity = {
+  APP_ENVIRONMENT: "development",
+  BASE_DATA_MODE: "readonly",
+  APP_STORE_MODE: "upstash",
+  VERCEL_ENV: "preview",
+  VERCEL_GIT_COMMIT_REF: "codex/development",
+};
+
+async function assertPreflightResponse(response, status, bodyStatus) {
+  assert.equal(response.status, status);
+  assert.equal(
+    response.headers.get("Cache-Control"),
+    "private, no-store, max-age=0"
+  );
+  assert.equal(response.headers.get("Vary"), "Cookie");
+  assert.equal(
+    await response.text(),
+    bodyStatus === null ? "" : JSON.stringify({ status: bodyStatus })
+  );
+}
+
+// identity不一致は認証前に404、既存認証responseは固定401へ変換する。
+{
+  let authenticationCalls = 0;
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: {},
+    requireAuthenticated: async () => {
+      authenticationCalls += 1;
+      return null;
+    },
+  });
+  await assertPreflightResponse(response, 404, null);
+  assert.equal(authenticationCalls, 0);
+}
+{
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: preflightIdentity,
+    requireAuthenticated: async () =>
+      new Response("existing authentication response must not leak", {
+        status: 418,
+        headers: { "X-Existing-Auth": "must-not-leak" },
+      }),
+  });
+  assert.equal(response.headers.has("X-Existing-Auth"), false);
+  await assertPreflightResponse(response, 401, "UNAUTHORIZED");
+}
+{
+  const configInspectionFailure = new Error(
+    "config presence must not be inspected before authentication"
+  );
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: new Proxy(preflightIdentity, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "BASE_READONLY_CLIENT_ID") {
+          throw configInspectionFailure;
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    }),
+    requireAuthenticated: async () => new Response(null, { status: 401 }),
+  });
+  await assertPreflightResponse(response, 401, "UNAUTHORIZED");
+}
+
+// 認証後、4変数がすべて不在ならABSENT、own propertyが1つでもあれば値を読まず停止する。
+{
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: preflightIdentity,
+    requireAuthenticated: async () => null,
+  });
+  await assertPreflightResponse(response, 200, "ABSENT");
+}
+for (const [name, value] of [
+  ["BASE_READONLY_CLIENT_ID", ""],
+  ["BASE_READONLY_CLIENT_SECRET", undefined],
+  ["BASE_READONLY_REDIRECT_URI", "configured"],
+  ["BASE_READONLY_ACCESS_TOKEN", "configured"],
+]) {
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: { ...preflightIdentity, [name]: value },
+    requireAuthenticated: async () => null,
+  });
+  await assertPreflightResponse(response, 409, "PRESENT_STOP");
+}
+{
+  const environmentWithUnreadableConfig = { ...preflightIdentity };
+  Object.defineProperty(
+    environmentWithUnreadableConfig,
+    "BASE_READONLY_CLIENT_SECRET",
+    {
+      enumerable: true,
+      get() {
+        throw new Error("config value must not be read");
+      },
+    }
+  );
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: environmentWithUnreadableConfig,
+    requireAuthenticated: async () => null,
+  });
+  await assertPreflightResponse(response, 409, "PRESENT_STOP");
+}
+
+// identity判定や認証の予期しない例外は設定不正へ縮退させず、固定500へ渡す。
+{
+  const identityFailure = new Error("unexpected identity failure");
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: new Proxy(preflightIdentity, {
+      get(target, property, receiver) {
+        if (property === "APP_ENVIRONMENT") throw identityFailure;
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+    requireAuthenticated: async () => null,
+  });
+  await assertPreflightResponse(response, 500, "INTERNAL_ERROR");
+}
+{
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: preflightIdentity,
+    requireAuthenticated: async () => {
+      throw new Error("unexpected authentication failure");
+    },
+  });
+  await assertPreflightResponse(response, 500, "INTERNAL_ERROR");
+}
 
 function canonical(value) {
   return `${canonicalPrefix}${JSON.stringify(value)}`;
@@ -604,6 +743,10 @@ const baseApiSource = await source("lib/base-api.ts");
 const productionStartSource = await source("app/api/base/reauth/start/route.ts");
 const productionCallbackSource = await source("app/api/base/reauth/callback/route.ts");
 const developmentStartSource = await source("app/api/base/readonly-reauth/start/route.ts");
+const preflightSource = await source("lib/base-readonly-oauth-preflight.ts");
+const preflightRouteSource = await source(
+  "app/api/base/readonly-reauth/preflight/route.ts"
+);
 const rawSdkPackage = ["@", "upstash", "/redis"].join("");
 for (const moduleSource of [oauthSource, controlSource, cleanupSource, oauthRuntimeSource]) {
   assert.equal(moduleSource.includes(rawSdkPackage), false);
@@ -619,6 +762,30 @@ assert.ok(productionCallbackSource.includes('"auth:base_token"'));
 assert.equal(controlSource.includes("createEnabled"), false);
 assert.equal(controlSource.includes("enableFor"), false);
 assert.equal(cleanupSource.includes("diagnostic"), false);
+
+// App内moduleのimport allowlist、非redirect、非loggingをpreflightの静的契約にする。
+const appModuleImports = (moduleSource) =>
+  [
+    ...moduleSource.matchAll(
+      /(?:from\s+|import\s+)["']((?:@\/|\.\.?\/)[^"']+)["']/g
+    ),
+  ].map((match) => match[1]);
+assert.deepEqual(appModuleImports(preflightSource), ["./runtime-mode"]);
+assert.deepEqual(appModuleImports(preflightRouteSource), [
+  "@/lib/auth",
+  "@/lib/base-readonly-oauth-preflight",
+]);
+assert.ok(preflightSource.includes("Object.hasOwn(env, name)"));
+assert.equal(preflightSource.includes("env[name]"), false);
+for (const moduleSource of [preflightSource, preflightRouteSource]) {
+  assert.equal(/\bconsole\./.test(moduleSource), false);
+  assert.equal(moduleSource.includes("Location"), false);
+  assert.equal(moduleSource.includes("redirect("), false);
+}
+assert.ok(preflightRouteSource.includes('export const runtime = "nodejs"'));
+assert.ok(
+  preflightRouteSource.includes('export const dynamic = "force-dynamic"')
+);
 for (const sensitiveFragment of [leaseL1, leaseL2, "development-access-token"]) {
   for (const errorClass of [
     new BaseReadonlyOAuthDisabledError(),
