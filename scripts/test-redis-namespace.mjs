@@ -39,6 +39,92 @@ pipeline.del("pipeline:value");
 assert.deepEqual(await pipeline.exec(), ["OK", "ok", 2, 1, 1]);
 assert.deepEqual(await raw.smembers(`${DEVELOPMENT_REDIS_NAMESPACE}pipeline:set`), ["y"]);
 
+await development.set("atomic:guard", "lease-1");
+assert.equal(
+  await development.setIfValueMatches(
+    "atomic:guard",
+    "lease-1",
+    "atomic:target",
+    "owned-value"
+  ),
+  true
+);
+assert.equal(
+  await raw.get(`${DEVELOPMENT_REDIS_NAMESPACE}atomic:target`),
+  "owned-value"
+);
+assert.equal(
+  await development.setIfValueMatches(
+    "atomic:guard",
+    "different-lease",
+    "atomic:target",
+    "must-not-write"
+  ),
+  false
+);
+assert.equal(
+  await raw.get(`${DEVELOPMENT_REDIS_NAMESPACE}atomic:target`),
+  "owned-value"
+);
+assert.equal(
+  await development.compareAndDelete("atomic:target", "different-owner"),
+  false
+);
+assert.equal(
+  await development.compareAndDelete("atomic:target", "owned-value"),
+  true
+);
+
+class AtomicSpyRedis extends MemoryRedis {
+  atomicCalls = [];
+
+  async compareAndDelete(key, expectedValue) {
+    this.atomicCalls.push(["compareAndDelete", key, expectedValue]);
+    return super.compareAndDelete(key, expectedValue);
+  }
+
+  async setIfValueMatches(guardKey, expectedGuardValue, targetKey, value) {
+    this.atomicCalls.push([
+      "setIfValueMatches",
+      guardKey,
+      expectedGuardValue,
+      targetKey,
+      value,
+    ]);
+    return super.setIfValueMatches(
+      guardKey,
+      expectedGuardValue,
+      targetKey,
+      value
+    );
+  }
+}
+
+const atomicSpyRaw = new AtomicSpyRedis();
+const atomicSpyDevelopment = createDevelopmentRedis(atomicSpyRaw);
+await atomicSpyDevelopment.set("guard", "enabled");
+await atomicSpyDevelopment.setIfValueMatches(
+  "guard",
+  "enabled",
+  "target",
+  "owned"
+);
+await atomicSpyDevelopment.compareAndDelete("target", "owned");
+assert.deepEqual(atomicSpyRaw.atomicCalls, [
+  [
+    "setIfValueMatches",
+    `${DEVELOPMENT_REDIS_NAMESPACE}guard`,
+    "enabled",
+    `${DEVELOPMENT_REDIS_NAMESPACE}target`,
+    "owned",
+  ],
+  [
+    "compareAndDelete",
+    `${DEVELOPMENT_REDIS_NAMESPACE}target`,
+    "owned",
+  ],
+]);
+
 await assert.rejects(
   development.set(`${DEVELOPMENT_REDIS_NAMESPACE}double`, "blocked"),
   /reserved Development Redis prefix/
@@ -93,6 +179,22 @@ await assert.rejects(
 await assert.rejects(
   production.keys("dev:*"),
   /could reach the Development namespace/
+);
+await assert.rejects(
+  production.compareAndDelete(
+    `${DEVELOPMENT_REDIS_NAMESPACE}auth:base_readonly_token`,
+    "blocked"
+  ),
+  /reserved Development Redis prefix/
+);
+await assert.rejects(
+  production.setIfValueMatches(
+    "auth:base_readonly_control",
+    "enabled",
+    `${DEVELOPMENT_REDIS_NAMESPACE}auth:base_readonly_token`,
+    "blocked"
+  ),
+  /reserved Development Redis prefix/
 );
 
 const productionRuntime = resolveRuntimeConfig({

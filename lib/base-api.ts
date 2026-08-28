@@ -2,6 +2,7 @@
 // 注文取得・出荷完了書き戻しなど、BASE APIとの通信はすべてここ経由で行う
 
 import { redis } from "@/lib/upstash";
+import { fetchDevelopmentBaseJson } from "@/lib/base-readonly-api-client";
 import { getBaseReadonlyOAuthModule } from "@/lib/base-readonly-oauth-runtime";
 import {
   assertBaseRequestAllowed,
@@ -288,12 +289,6 @@ function getBaseUrl(mode: BaseDataMode): string {
   return mode === "readonly" ? BASE_READONLY_API_BASE_URL : BASE_API_BASE_URL;
 }
 
-async function getTokenForMode(mode: BaseDataMode): Promise<string> {
-  return mode === "readonly"
-    ? getBaseReadonlyOAuthModule().getAccessToken()
-    : getBaseToken();
-}
-
 /**
  * Upstash の refresh_token を使って BASE API トークンを更新し、新しい access_token を返す。
  * 同時更新防止のため Redis ロック（auth:base_refresh_lock）を使用する。
@@ -378,8 +373,16 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
   }
 
   assertBaseRequestAllowed(baseDataMode, "GET");
-  const token = await getTokenForMode(baseDataMode);
   const url = `${getBaseUrl(baseDataMode)}/orders?dispatch_status=ordered&limit=100`;
+  if (baseDataMode === "readonly") {
+    const data = await fetchDevelopmentBaseJson<BaseOrdersApiResponse>({
+      oauth: getBaseReadonlyOAuthModule(),
+      url,
+    });
+    return data.orders;
+  }
+
+  const token = await getBaseToken();
   const res = await fetch(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
@@ -387,9 +390,6 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
   });
 
   if (!res.ok) {
-    if (baseDataMode === "readonly") {
-      throw new Error(`BASE API error: HTTP ${res.status}`);
-    }
     const body = await res.text();
     throw new Error(`BASE API error: ${res.status} ${body}`);
   }
@@ -410,8 +410,16 @@ export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
   }
 
   assertBaseRequestAllowed(baseDataMode, "GET");
-  const token = await getTokenForMode(baseDataMode);
   const url = `${getBaseUrl(baseDataMode)}/orders/detail/${uniqueKey}`;
+  if (baseDataMode === "readonly") {
+    const data = await fetchDevelopmentBaseJson<{ order: BaseOrder }>({
+      oauth: getBaseReadonlyOAuthModule(),
+      url,
+    });
+    return data.order;
+  }
+
+  const token = await getBaseToken();
   const res = await fetch(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
@@ -419,9 +427,6 @@ export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
   });
 
   if (!res.ok) {
-    if (baseDataMode === "readonly") {
-      throw new Error(`BASE API detail error: HTTP ${res.status}`);
-    }
     const body = await res.text();
     throw new Error(`BASE API detail error [${uniqueKey}]: ${res.status} ${body}`);
   }

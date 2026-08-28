@@ -12,7 +12,10 @@
     "test:development-environment": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-development-environment.mjs",
     "test:redis-namespace": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-redis-namespace.mjs",
     "test:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth.mjs",
+    "test:base-readonly-oauth-cleanup": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth-cleanup.mjs",
+    "test:base-readonly-api-client": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-api-client.mjs",
     "test:mock-dev-lifecycle": "node scripts/test-mock-dev-lifecycle.mjs",
+    "cleanup:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/cleanup-base-readonly-oauth.mjs",
     "diagnose:partial-cancel": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/diagnose-partial-cancel.mjs"
   },
   "dependencies": {

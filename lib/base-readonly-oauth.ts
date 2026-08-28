@@ -1,5 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
+  BaseReadonlyOAuthDisabledError,
+  createBaseReadonlyOAuthControl,
+  type BaseReadonlyOAuthControl,
+  type EnabledLeaseHandle,
+} from "./base-readonly-oauth-control";
+import {
   assertDevelopmentRedis,
   type DevelopmentRedisLike,
 } from "./namespaced-redis";
@@ -13,7 +19,6 @@ const AUTHORIZE_ENDPOINT = "https://api.thebase.in/1/oauth/authorize";
 const TOKEN_ENDPOINT = "https://api.thebase.in/1/oauth/token";
 const CALLBACK_PATH = "/api/base/readonly-reauth/callback";
 const REQUIRED_SCOPE = "read_orders";
-const TOKEN_KEY = "auth:base_readonly_token";
 const REFRESH_LOCK_KEY = "auth:base_readonly_refresh_lock";
 const STATE_KEY_PREFIX = "auth:base_readonly_state:";
 const STATE_CLAIM_KEY_PREFIX = "auth:base_readonly_state_claim:";
@@ -41,10 +46,12 @@ type ReadonlyOAuthDependencies = {
   fetchFn?: FetchLike;
   now?: () => number;
   randomStateBytes?: () => Uint8Array;
+  randomOwnerBytes?: () => Uint8Array;
+  control?: BaseReadonlyOAuthControl;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 type StateRecord = {
-  version: 1;
   purpose: "base_readonly_oauth";
   appEnvironment: "development";
   vercelEnvironment: "preview";
@@ -54,10 +61,13 @@ type StateRecord = {
   expiresAt: number;
 };
 
+type OperationRecord = {
+  createdAt: number;
+};
+
 type ScopeVerification = "response" | "requested_and_manual_consent";
 
 type StoredReadonlyToken = {
-  version: 1;
   accessToken: string;
   refreshToken: string;
   tokenType: "Bearer";
@@ -73,6 +83,11 @@ type TokenResponse = {
   scopeVerification: ScopeVerification;
 };
 
+declare const baseReadonlyAccessGrantBrand: unique symbol;
+export type BaseReadonlyAccessGrant = Readonly<{
+  [baseReadonlyAccessGrantBrand]: true;
+}>;
+
 export type BaseReadonlyOAuthCallbackResult = "authorized" | "denied";
 
 export interface BaseReadonlyOAuthModule {
@@ -84,7 +99,8 @@ export interface BaseReadonlyOAuthModule {
     requestUrl: string;
     sessionNonce: string;
   }): Promise<BaseReadonlyOAuthCallbackResult>;
-  getAccessToken(): Promise<string>;
+  getAccessGrant(): Promise<BaseReadonlyAccessGrant>;
+  authorizeAccessGrant(grant: BaseReadonlyAccessGrant): Promise<string>;
 }
 
 export class BaseReadonlyReauthorizationRequiredError extends Error {
@@ -165,44 +181,61 @@ function validateConfig(config: ReadonlyOAuthConfig): URL {
   return redirect;
 }
 
-function parseStateRecord(value: unknown): StateRecord | null {
-  if (!isRecord(value)) return null;
+function normalizeStateRecord(value: unknown): StateRecord | null {
   if (
-    value.version !== 1 ||
-    value.purpose !== "base_readonly_oauth" ||
-    value.appEnvironment !== "development" ||
-    value.vercelEnvironment !== "preview" ||
-    value.branch !== DEVELOPMENT_PREVIEW_BRANCH ||
-    typeof value.sessionNonceHash !== "string" ||
-    typeof value.createdAt !== "number" ||
-    !Number.isSafeInteger(value.createdAt) ||
-    typeof value.expiresAt !== "number" ||
-    !Number.isSafeInteger(value.expiresAt)
+    !isRecord(value) ||
+    !(
+    value.purpose === "base_readonly_oauth" &&
+    value.appEnvironment === "development" &&
+    value.vercelEnvironment === "preview" &&
+    value.branch === DEVELOPMENT_PREVIEW_BRANCH &&
+    typeof value.sessionNonceHash === "string" &&
+    typeof value.createdAt === "number" &&
+    Number.isSafeInteger(value.createdAt) &&
+    typeof value.expiresAt === "number" &&
+    Number.isSafeInteger(value.expiresAt)
+    )
   ) {
     return null;
   }
-  return value as StateRecord;
+  return {
+    purpose: "base_readonly_oauth",
+    appEnvironment: "development",
+    vercelEnvironment: "preview",
+    branch: DEVELOPMENT_PREVIEW_BRANCH,
+    sessionNonceHash: value.sessionNonceHash,
+    createdAt: value.createdAt,
+    expiresAt: value.expiresAt,
+  };
 }
 
-function parseStoredToken(value: unknown): StoredReadonlyToken | null {
-  if (!isRecord(value)) return null;
+function normalizeStoredToken(value: unknown): StoredReadonlyToken | null {
   if (
-    value.version !== 1 ||
-    typeof value.accessToken !== "string" ||
-    !value.accessToken ||
-    typeof value.refreshToken !== "string" ||
-    !value.refreshToken ||
-    value.tokenType !== "Bearer" ||
-    typeof value.expiresAt !== "number" ||
-    !Number.isSafeInteger(value.expiresAt) ||
-    value.expiresAt <= 0 ||
-    value.expectedScope !== REQUIRED_SCOPE ||
-    (value.scopeVerification !== "response" &&
-      value.scopeVerification !== "requested_and_manual_consent")
+    !isRecord(value) ||
+    !(
+    typeof value.accessToken === "string" &&
+    Boolean(value.accessToken) &&
+    typeof value.refreshToken === "string" &&
+    Boolean(value.refreshToken) &&
+    value.tokenType === "Bearer" &&
+    typeof value.expiresAt === "number" &&
+    Number.isSafeInteger(value.expiresAt) &&
+    value.expiresAt > 0 &&
+    value.expectedScope === REQUIRED_SCOPE &&
+    (value.scopeVerification === "response" ||
+      value.scopeVerification === "requested_and_manual_consent")
+    )
   ) {
     return null;
   }
-  return value as StoredReadonlyToken;
+  return {
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken,
+    tokenType: "Bearer",
+    expiresAt: value.expiresAt,
+    expectedScope: REQUIRED_SCOPE,
+    scopeVerification: value.scopeVerification,
+  };
 }
 
 function parseTokenResponse(
@@ -219,10 +252,7 @@ function parseTokenResponse(
   const expiresIn = value.expires_in;
   const scope = value.scope;
 
-  if (
-    typeof refreshToken !== "string" ||
-    !refreshToken.trim()
-  ) {
+  if (typeof refreshToken !== "string" || !refreshToken.trim()) {
     if (isRefreshResponse) {
       throw new BaseReadonlyReauthorizationRequiredError();
     }
@@ -295,6 +325,29 @@ export function createBaseReadonlyOAuth(
   const now = dependencies.now ?? Date.now;
   const randomStateBytes =
     dependencies.randomStateBytes ?? (() => randomBytes(32));
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const control =
+    dependencies.control ??
+    createBaseReadonlyOAuthControl(redis, {
+      now,
+      randomOwnerBytes: dependencies.randomOwnerBytes,
+    });
+  const grants = new WeakMap<
+    object,
+    { handle: EnabledLeaseHandle; accessToken: string }
+  >();
+
+  function createGrant(
+    handle: EnabledLeaseHandle,
+    accessToken: string
+  ): BaseReadonlyAccessGrant {
+    const grant = Object.freeze({}) as BaseReadonlyAccessGrant;
+    grants.set(grant, { handle, accessToken });
+    return grant;
+  }
 
   function assertRequestOrigin(requestOrigin: string): void {
     let origin: URL;
@@ -317,10 +370,12 @@ export function createBaseReadonlyOAuth(
   }
 
   async function requestToken(
+    handle: EnabledLeaseHandle,
     params: URLSearchParams,
     inheritedScopeVerification?: ScopeVerification,
     isRefreshResponse = false
   ): Promise<TokenResponse> {
+    await control.assertSameEnabledLease(handle);
     let response: Response;
     try {
       response = await fetchFn(TOKEN_ENDPOINT, {
@@ -343,14 +398,14 @@ export function createBaseReadonlyOAuth(
     } catch {
       throw new BaseReadonlyOAuthExchangeError();
     }
-    return parseTokenResponse(
-      body,
-      inheritedScopeVerification,
-      isRefreshResponse
-    );
+    await control.assertSameEnabledLease(handle);
+    return parseTokenResponse(body, inheritedScopeVerification, isRefreshResponse);
   }
 
-  async function saveToken(token: TokenResponse): Promise<string> {
+  async function saveToken(
+    handle: EnabledLeaseHandle,
+    token: TokenResponse
+  ): Promise<string> {
     const nowValue = now();
     if (!Number.isSafeInteger(nowValue) || nowValue < 0) {
       throw new BaseReadonlyOAuthExchangeError();
@@ -360,7 +415,6 @@ export function createBaseReadonlyOAuth(
       throw new BaseReadonlyOAuthExchangeError();
     }
     const stored: StoredReadonlyToken = {
-      version: 1,
       accessToken: token.accessToken,
       refreshToken: token.refreshToken,
       tokenType: "Bearer",
@@ -368,8 +422,8 @@ export function createBaseReadonlyOAuth(
       expectedScope: REQUIRED_SCOPE,
       scopeVerification: token.scopeVerification,
     };
-    const saved = await redis.set(TOKEN_KEY, stored);
-    if (saved !== "OK") throw new BaseReadonlyOAuthExchangeError();
+    const owned = control.createOwnedRecord(handle, "token", stored);
+    await control.saveTokenForLease(handle, owned);
     return token.accessToken;
   }
 
@@ -379,6 +433,7 @@ export function createBaseReadonlyOAuth(
   }): Promise<string> {
     assertRequestOrigin(input.requestOrigin);
     if (!input.sessionNonce) throw new BaseReadonlyOAuthStateError();
+    const handle = await control.captureEnabledLease();
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const bytes = randomStateBytes();
@@ -393,8 +448,7 @@ export function createBaseReadonlyOAuth(
       if (!Number.isSafeInteger(createdAt) || !Number.isSafeInteger(expiresAt)) {
         throw new BaseReadonlyOAuthStateError();
       }
-      const record: StateRecord = {
-        version: 1,
+      const record = control.createOwnedRecord<StateRecord>(handle, "state", {
         purpose: "base_readonly_oauth",
         appEnvironment: "development",
         vercelEnvironment: "preview",
@@ -402,11 +456,13 @@ export function createBaseReadonlyOAuth(
         sessionNonceHash: hashSessionNonce(input.sessionNonce),
         createdAt,
         expiresAt,
-      };
-      const saved = await redis.set(`${STATE_KEY_PREFIX}${state}`, record, {
-        nx: true,
-        ex: STATE_TTL_SECONDS,
       });
+      const saved = await control.setOwnedIfAbsent(
+        handle,
+        `${STATE_KEY_PREFIX}${state}`,
+        record,
+        STATE_TTL_SECONDS
+      );
       if (saved) {
         const authorizeUrl = new URL(AUTHORIZE_ENDPOINT);
         authorizeUrl.searchParams.set("response_type", "code");
@@ -441,11 +497,21 @@ export function createBaseReadonlyOAuth(
     }
 
     const callback = parseCallbackParameters(callbackUrl);
+    const handle = await control.captureEnabledLease();
     const stateKey = `${STATE_KEY_PREFIX}${callback.state}`;
-    const stateRecord = parseStateRecord(await redis.get(stateKey));
+    const stateOwned = await control.readOwnedRecord(
+      handle,
+      stateKey,
+      "state",
+      normalizeStateRecord
+    );
+    const stateRecord = stateOwned
+      ? control.getOwnedPayload(stateOwned)
+      : null;
     const nowValue = now();
     const nonceHash = hashSessionNonce(input.sessionNonce);
     if (
+      !stateOwned ||
       !stateRecord ||
       stateRecord.createdAt > nowValue ||
       stateRecord.expiresAt <= nowValue ||
@@ -454,17 +520,22 @@ export function createBaseReadonlyOAuth(
       throw new BaseReadonlyOAuthStateError();
     }
 
-    const claimed = await redis.set(
+    const claim = control.createOwnedRecord<OperationRecord>(handle, "claim", {
+      createdAt: nowValue,
+    });
+    const claimed = await control.setOwnedIfAbsent(
+      handle,
       `${STATE_CLAIM_KEY_PREFIX}${callback.state}`,
-      "1",
-      { nx: true, ex: STATE_CLAIM_TTL_SECONDS }
+      claim,
+      STATE_CLAIM_TTL_SECONDS
     );
     if (!claimed) throw new BaseReadonlyOAuthStateError();
 
-    await redis.del(stateKey);
+    await control.consumeOwnedRecord(handle, stateKey, stateOwned);
     if (callback.denied) return "denied";
 
     const token = await requestToken(
+      handle,
       new URLSearchParams({
         grant_type: "authorization_code",
         code: callback.code!,
@@ -473,35 +544,59 @@ export function createBaseReadonlyOAuth(
         redirect_uri: redirect.href,
       })
     );
-    await saveToken(token);
+    await saveToken(handle, token);
     return "authorized";
   }
 
-  async function getAccessToken(): Promise<string> {
-    const stored = parseStoredToken(await redis.get(TOKEN_KEY));
+  async function getAccessGrant(): Promise<BaseReadonlyAccessGrant> {
+    const handle = await control.captureEnabledLease();
+    const storedOwned = await control.readTokenForLease(
+      handle,
+      normalizeStoredToken
+    );
+    const stored = storedOwned
+      ? control.getOwnedPayload(storedOwned)
+      : null;
     if (!stored) throw new BaseReadonlyReauthorizationRequiredError();
 
     if (stored.expiresAt > now() + TOKEN_EXPIRY_MARGIN_SECONDS * 1000) {
-      return stored.accessToken;
+      return createGrant(handle, stored.accessToken);
     }
 
-    const lockAcquired = await redis.set(REFRESH_LOCK_KEY, "1", {
-      nx: true,
-      ex: REFRESH_LOCK_TTL_SECONDS,
-    });
+    const lock = control.createOwnedRecord<OperationRecord>(
+      handle,
+      "refresh_lock",
+      { createdAt: now() }
+    );
+    const lockAcquired = await control.setOwnedIfAbsent(
+      handle,
+      REFRESH_LOCK_KEY,
+      lock,
+      REFRESH_LOCK_TTL_SECONDS
+    );
     if (!lockAcquired) {
-      const updated = parseStoredToken(await redis.get(TOKEN_KEY));
-      if (
-        updated &&
-        updated.expiresAt > now() + TOKEN_EXPIRY_MARGIN_SECONDS * 1000
-      ) {
-        return updated.accessToken;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await sleep(500);
+        const updatedOwned = await control.readTokenForLease(
+          handle,
+          normalizeStoredToken
+        );
+        const updated = updatedOwned
+          ? control.getOwnedPayload(updatedOwned)
+          : null;
+        if (
+          updated &&
+          updated.expiresAt > now() + TOKEN_EXPIRY_MARGIN_SECONDS * 1000
+        ) {
+          return createGrant(handle, updated.accessToken);
+        }
       }
       throw new BaseReadonlyOAuthExchangeError();
     }
 
     try {
       const token = await requestToken(
+        handle,
         new URLSearchParams({
           grant_type: "refresh_token",
           client_id: config.clientId,
@@ -512,13 +607,28 @@ export function createBaseReadonlyOAuth(
         stored.scopeVerification,
         true
       );
-      return await saveToken(token);
+      const accessToken = await saveToken(handle, token);
+      return createGrant(handle, accessToken);
     } finally {
-      await redis.del(REFRESH_LOCK_KEY);
+      await control.rollbackOwnedRecord(REFRESH_LOCK_KEY, lock);
     }
   }
 
-  return { createAuthorizationUrl, completeCallback, getAccessToken };
+  async function authorizeAccessGrant(
+    grant: BaseReadonlyAccessGrant
+  ): Promise<string> {
+    const details = grants.get(grant);
+    if (!details) throw new BaseReadonlyOAuthDisabledError();
+    await control.assertSameEnabledLease(details.handle);
+    return details.accessToken;
+  }
+
+  return {
+    createAuthorizationUrl,
+    completeCallback,
+    getAccessGrant,
+    authorizeAccessGrant,
+  };
 }
 
 export const BASE_READONLY_OAUTH_CALLBACK_PATH = CALLBACK_PATH;

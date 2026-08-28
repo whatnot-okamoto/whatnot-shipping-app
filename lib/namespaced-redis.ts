@@ -111,6 +111,30 @@ class GuardedRedis implements RedisLike {
     return physicalKeys.map((key) => this.policy.result(key));
   }
 
+  async compareAndDelete(
+    key: string,
+    expectedValue: string
+  ): Promise<boolean> {
+    return this.target.compareAndDelete(
+      this.policy.key(key),
+      expectedValue
+    );
+  }
+
+  async setIfValueMatches(
+    guardKey: string,
+    expectedGuardValue: string,
+    targetKey: string,
+    value: string
+  ): Promise<boolean> {
+    return this.target.setIfValueMatches(
+      this.policy.key(guardKey),
+      expectedGuardValue,
+      this.policy.key(targetKey),
+      value
+    );
+  }
+
   pipeline(): RedisPipelineLike {
     const target = this.target.pipeline();
     const pipeline: RedisPipelineLike = {

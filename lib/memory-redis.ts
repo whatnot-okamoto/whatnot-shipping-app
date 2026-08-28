@@ -102,6 +102,34 @@ export class MemoryRedis implements RedisLike {
     return [...allKeys].filter((key) => expression.test(key));
   }
 
+  async compareAndDelete(
+    key: string,
+    expectedValue: string
+  ): Promise<boolean> {
+    this.deleteExpiredValue(key);
+    const stored = this.values.get(key);
+    if (!stored || stored.value !== expectedValue) return false;
+    this.values.delete(key);
+    return true;
+  }
+
+  async setIfValueMatches(
+    guardKey: string,
+    expectedGuardValue: string,
+    targetKey: string,
+    value: string
+  ): Promise<boolean> {
+    this.deleteExpiredValue(guardKey);
+    const guard = this.values.get(guardKey);
+    if (!guard || guard.value !== expectedGuardValue) return false;
+    this.sets.delete(targetKey);
+    this.values.set(targetKey, {
+      value,
+      expiresAt: null,
+    });
+    return true;
+  }
+
   pipeline(): RedisPipelineLike {
     const commands: Array<() => Promise<unknown>> = [];
     const pipeline: RedisPipelineLike = {
