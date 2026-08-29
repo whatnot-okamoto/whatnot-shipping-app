@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
   BaseReadonlyOAuthExchangeError,
   BaseReadonlyOAuthStateError,
@@ -74,6 +75,11 @@ async function assertPreflightResponse(response, status, bodyStatus) {
   );
   assert.equal(response.headers.get("Vary"), "Cookie");
   assert.equal(
+    response.headers.get("Content-Type"),
+    bodyStatus === null ? null : "application/json"
+  );
+  assert.equal(response.headers.get("Location"), null);
+  assert.equal(
     await response.text(),
     bodyStatus === null ? "" : JSON.stringify({ status: bodyStatus })
   );
@@ -130,6 +136,21 @@ async function assertPreflightResponse(response, status, bodyStatus) {
   const response = await handleBaseReadonlyOAuthPreflight({
     request: preflightRequest,
     env: preflightIdentity,
+    requireAuthenticated: async () => null,
+  });
+  await assertPreflightResponse(response, 200, "ABSENT");
+}
+{
+  const inheritedOAuthConfig = Object.create({
+    BASE_READONLY_CLIENT_ID: "inherited",
+    BASE_READONLY_CLIENT_SECRET: "inherited",
+    BASE_READONLY_REDIRECT_URI: "inherited",
+    BASE_READONLY_ACCESS_TOKEN: "inherited",
+  });
+  Object.assign(inheritedOAuthConfig, preflightIdentity);
+  const response = await handleBaseReadonlyOAuthPreflight({
+    request: preflightRequest,
+    env: inheritedOAuthConfig,
     requireAuthenticated: async () => null,
   });
   await assertPreflightResponse(response, 200, "ABSENT");
@@ -763,25 +784,242 @@ assert.equal(controlSource.includes("createEnabled"), false);
 assert.equal(controlSource.includes("enableFor"), false);
 assert.equal(cleanupSource.includes("diagnostic"), false);
 
-// App内moduleのimport allowlist、非redirect、非loggingをpreflightの静的契約にする。
-const appModuleImports = (moduleSource) =>
-  [
-    ...moduleSource.matchAll(
-      /(?:from\s+|import\s+)["']((?:@\/|\.\.?\/)[^"']+)["']/g
-    ),
-  ].map((match) => match[1]);
-assert.deepEqual(appModuleImports(preflightSource), ["./runtime-mode"]);
-assert.deepEqual(appModuleImports(preflightRouteSource), [
-  "@/lib/auth",
-  "@/lib/base-readonly-oauth-preflight",
-]);
+// 新規route／helperの直接importと列挙した直接呼出しだけをAST契約にする。
+const routeImportContract = [
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "next/server",
+    clauseTypeOnly: true,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "NextRequest", local: "NextRequest", specifierTypeOnly: false },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "@/lib/auth",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "requireAuth", local: "requireAuth", specifierTypeOnly: false },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "@/lib/base-readonly-oauth-preflight",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      {
+        imported: "handleBaseReadonlyOAuthPreflight",
+        local: "handleBaseReadonlyOAuthPreflight",
+        specifierTypeOnly: false,
+      },
+    ],
+  },
+];
+const helperImportContract = [
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "./runtime-mode",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      {
+        imported: "matchesDevelopmentPreviewRuntimeIdentity",
+        local: "matchesDevelopmentPreviewRuntimeIdentity",
+        specifierTypeOnly: false,
+      },
+    ],
+  },
+];
+
+function analyzePreflightAst(moduleSource, fileName) {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    moduleSource,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  assert.equal(
+    sourceFile.parseDiagnostics.length,
+    0,
+    `${fileName} must parse without diagnostics`
+  );
+
+  const imports = [];
+  const violations = [];
+
+  function visit(node) {
+    if (ts.isImportDeclaration(node)) {
+      const importClause = node.importClause;
+      const namedBindings = importClause?.namedBindings;
+      imports.push({
+        declarationKind: "ImportDeclaration",
+        moduleSpecifier: ts.isStringLiteralLike(node.moduleSpecifier)
+          ? node.moduleSpecifier.text
+          : "<non-literal>",
+        clauseTypeOnly: importClause?.isTypeOnly ?? null,
+        defaultImport: importClause?.name?.text ?? null,
+        namespaceImport:
+          namedBindings && ts.isNamespaceImport(namedBindings)
+            ? namedBindings.name.text
+            : null,
+        namedImports:
+          namedBindings && ts.isNamedImports(namedBindings)
+            ? namedBindings.elements.map((specifier) => ({
+                imported: (specifier.propertyName ?? specifier.name).text,
+                local: specifier.name.text,
+                specifierTypeOnly: specifier.isTypeOnly,
+              }))
+            : [],
+      });
+      if (!importClause) violations.push("side_effect_import");
+    }
+
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      violations.push(node.exportClause ? "module_reexport" : "export_star");
+    }
+    if (ts.isImportEqualsDeclaration(node)) {
+      violations.push("import_equals");
+    }
+
+    if (ts.isPropertyAccessExpression(node)) {
+      if (ts.isIdentifier(node.expression) && node.expression.text === "console") {
+        violations.push("console_access");
+      }
+      if (ts.isIdentifier(node.expression) && node.expression.text === "redis") {
+        violations.push("redis_access");
+      }
+    }
+    if (ts.isElementAccessExpression(node)) {
+      if (ts.isIdentifier(node.expression) && node.expression.text === "console") {
+        violations.push("console_access");
+      }
+      if (ts.isIdentifier(node.expression) && node.expression.text === "redis") {
+        violations.push("redis_access");
+      }
+    }
+
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (callee.kind === ts.SyntaxKind.ImportKeyword) {
+        violations.push("dynamic_import");
+      }
+      if (ts.isIdentifier(callee) && callee.text === "require") {
+        violations.push("require_call");
+      }
+      if (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "module" &&
+        callee.name.text === "require"
+      ) {
+        violations.push("module_require_call");
+      }
+      if (ts.isIdentifier(callee) && callee.text === "fetch") {
+        violations.push("direct_fetch_call");
+      }
+      if (ts.isPropertyAccessExpression(callee) && callee.name.text === "fetch") {
+        violations.push("property_fetch_call");
+      }
+      if (
+        ts.isElementAccessExpression(callee) &&
+        ts.isStringLiteralLike(callee.argumentExpression) &&
+        callee.argumentExpression.text === "fetch"
+      ) {
+        violations.push("element_fetch_call");
+      }
+      if (ts.isIdentifier(callee) && callee.text === "redirect") {
+        violations.push("direct_redirect_call");
+      }
+      if (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isIdentifier(callee.expression) &&
+        ["Response", "NextResponse"].includes(callee.expression.text) &&
+        callee.name.text === "redirect"
+      ) {
+        violations.push(`${callee.expression.text}_redirect_call`);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { imports, violations };
+}
+
+function assertPreflightAstContract(moduleSource, fileName, expectedImports) {
+  const analysis = analyzePreflightAst(moduleSource, fileName);
+  assert.deepEqual(analysis.imports, expectedImports);
+  assert.deepEqual(analysis.violations, []);
+}
+
+const allowedRouteImportFixture = [
+  'import type { NextRequest } from "next/server";',
+  'import { requireAuth } from "@/lib/auth";',
+  'import { handleBaseReadonlyOAuthPreflight } from "@/lib/base-readonly-oauth-preflight";',
+].join("\n");
+const allowedHelperImportFixture =
+  'import { matchesDevelopmentPreviewRuntimeIdentity } from "./runtime-mode";';
+assertPreflightAstContract(
+  allowedRouteImportFixture,
+  "allowed-route-imports.ts",
+  routeImportContract
+);
+assertPreflightAstContract(
+  allowedHelperImportFixture,
+  "allowed-helper-import.ts",
+  helperImportContract
+);
+
+const forbiddenAstFixtures = [
+  ["external-import.ts", 'import Redis from "@upstash/redis";'],
+  ["side-effect-import.ts", 'import "external-storage";'],
+  ["module-reexport.ts", 'export { client } from "external-network";'],
+  ["export-star.ts", 'export * from "external-network";'],
+  ["import-equals.ts", 'import client = require("external-storage");'],
+  ["dynamic-import.ts", 'const client = import("external-network");'],
+  ["require.ts", 'const client = require("external-network");'],
+  ["module-require.ts", 'const client = module.require("external-network");'],
+  ["direct-fetch.ts", 'fetch("https://example.invalid");'],
+  ["property-fetch.ts", 'client.fetch("https://example.invalid");'],
+  ["element-fetch.ts", 'client["fetch"]("https://example.invalid");'],
+  ["redis.ts", 'redis.get("key");'],
+  ["console.ts", 'console.log("message");'],
+  ["direct-redirect.ts", 'redirect("/target");'],
+  ["response-redirect.ts", 'Response.redirect("/target");'],
+  ["next-response-redirect.ts", 'NextResponse.redirect("/target");'],
+];
+for (const [fileName, fixtureSource] of forbiddenAstFixtures) {
+  assert.throws(
+    () => assertPreflightAstContract(fixtureSource, fileName, []),
+    (error) => error?.code === "ERR_ASSERTION"
+  );
+}
+assert.throws(
+  () => assertPreflightAstContract("import {", "parse-error.ts", []),
+  (error) => error?.code === "ERR_ASSERTION"
+);
+
+assertPreflightAstContract(
+  preflightRouteSource,
+  "app/api/base/readonly-reauth/preflight/route.ts",
+  routeImportContract
+);
+assertPreflightAstContract(
+  preflightSource,
+  "lib/base-readonly-oauth-preflight.ts",
+  helperImportContract
+);
 assert.ok(preflightSource.includes("Object.hasOwn(env, name)"));
 assert.equal(preflightSource.includes("env[name]"), false);
-for (const moduleSource of [preflightSource, preflightRouteSource]) {
-  assert.equal(/\bconsole\./.test(moduleSource), false);
-  assert.equal(moduleSource.includes("Location"), false);
-  assert.equal(moduleSource.includes("redirect("), false);
-}
 assert.ok(preflightRouteSource.includes('export const runtime = "nodejs"'));
 assert.ok(
   preflightRouteSource.includes('export const dynamic = "force-dynamic"')
