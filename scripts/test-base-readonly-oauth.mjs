@@ -1108,9 +1108,25 @@ function analyzePreflightAst(moduleSource, fileName) {
 }
 
 function assertPreflightAstContract(moduleSource, fileName, expectedImports) {
+  const violations = preflightAstContractViolations(
+    moduleSource,
+    fileName,
+    expectedImports
+  );
+  assert.deepEqual(violations, []);
+}
+
+function preflightAstContractViolations(
+  moduleSource,
+  fileName,
+  expectedImports
+) {
   const analysis = analyzePreflightAst(moduleSource, fileName);
-  assert.deepEqual(analysis.imports, expectedImports);
-  assert.deepEqual(analysis.violations, []);
+  const violations = [...analysis.violations];
+  if (JSON.stringify(analysis.imports) !== JSON.stringify(expectedImports)) {
+    violations.push("IMPORT_CONTRACT_MISMATCH");
+  }
+  return [...new Set(violations)];
 }
 
 const allowedRouteImportFixture = [
@@ -1152,44 +1168,109 @@ assertPreflightAstContract(
 );
 
 const forbiddenAstFixtures = [
-  ["external-import.ts", 'import Redis from "@upstash/redis";'],
-  ["side-effect-import.ts", 'import "external-storage";'],
-  ["module-reexport.ts", 'export { client } from "external-network";'],
-  ["export-star.ts", 'export * from "external-network";'],
-  ["import-equals.ts", 'import client = require("external-storage");'],
-  ["dynamic-import.ts", 'const client = import("external-network");'],
-  ["require.ts", 'const client = require("external-network");'],
-  ["module-require.ts", 'const client = module.require("external-network");'],
-  ["direct-fetch.ts", 'fetch("https://example.invalid");'],
-  ["property-fetch.ts", 'client.fetch("https://example.invalid");'],
-  ["element-fetch.ts", 'client["fetch"]("https://example.invalid");'],
-  ["redis.ts", 'redis.get("key");'],
-  ["console.ts", 'console.log("message");'],
-  ["local-storage.ts", 'localStorage.setItem("key", "value");'],
-  ["session-storage.ts", 'sessionStorage.setItem("key", "value");'],
-  ["document-cookie.ts", "document.cookie;"],
-  ["window-location.ts", 'window.location.href = "/target";'],
-  ["window-open.ts", 'window.open("/target");'],
-  ["location.ts", 'location.assign("/target");'],
-  ["router.ts", 'router.push("/target");'],
-  ["history.ts", 'history.pushState({}, "", "/target");'],
-  ["result-url.ts", "result.url;"],
-  ["result-error.ts", "result.error;"],
-  ["result-status.ts", "result.status;"],
-  ["direct-redirect.ts", 'redirect("/target");'],
-  ["response-redirect.ts", 'Response.redirect("/target");'],
-  ["next-response-redirect.ts", 'NextResponse.redirect("/target");'],
+  [
+    "external-import.ts",
+    'import Redis from "@upstash/redis";',
+    "IMPORT_CONTRACT_MISMATCH",
+  ],
+  ["side-effect-import.ts", 'import "external-storage";', "side_effect_import"],
+  [
+    "module-reexport.ts",
+    'export { client } from "external-network";',
+    "module_reexport",
+  ],
+  ["export-star.ts", 'export * from "external-network";', "export_star"],
+  [
+    "import-equals.ts",
+    'import client = require("external-storage");',
+    "import_equals",
+  ],
+  [
+    "dynamic-import.ts",
+    'const client = import("external-network");',
+    "dynamic_import",
+  ],
+  [
+    "require.ts",
+    'const client = require("external-network");',
+    "require_call",
+  ],
+  [
+    "module-require.ts",
+    'const client = module.require("external-network");',
+    "module_require_call",
+  ],
+  [
+    "direct-fetch.ts",
+    'fetch("https://example.invalid");',
+    "direct_fetch_call",
+  ],
+  [
+    "property-fetch.ts",
+    'client.fetch("https://example.invalid");',
+    "property_fetch_call",
+  ],
+  [
+    "element-fetch.ts",
+    'client["fetch"]("https://example.invalid");',
+    "element_fetch_call",
+  ],
+  ["redis.ts", 'redis.get("key");', "redis_access"],
+  ["console.ts", 'console.log("message");', "console_access"],
+  [
+    "local-storage.ts",
+    'localStorage.setItem("key", "value");',
+    "localStorage_access",
+  ],
+  [
+    "session-storage.ts",
+    'sessionStorage.setItem("key", "value");',
+    "sessionStorage_access",
+  ],
+  ["document-cookie.ts", "document.cookie;", "document_cookie_access"],
+  [
+    "window-location.ts",
+    'window.location.href = "/target";',
+    "window_location_access",
+  ],
+  ["window-open.ts", 'window.open("/target");', "window_open_access"],
+  ["location.ts", 'location.assign("/target");', "location_access"],
+  ["router.ts", 'router.push("/target");', "router_access"],
+  [
+    "history.ts",
+    'history.pushState({}, "", "/target");',
+    "history_access",
+  ],
+  ["result-url.ts", "result.url;", "result_url_access"],
+  ["result-error.ts", "result.error;", "result_error_access"],
+  ["result-status.ts", "result.status;", "result_status_access"],
+  ["direct-redirect.ts", 'redirect("/target");', "direct_redirect_call"],
+  [
+    "response-redirect.ts",
+    'Response.redirect("/target");',
+    "Response_redirect_call",
+  ],
+  [
+    "next-response-redirect.ts",
+    'NextResponse.redirect("/target");',
+    "NextResponse_redirect_call",
+  ],
 ];
-for (const [fileName, fixtureSource] of forbiddenAstFixtures) {
-  assert.throws(
-    () => assertPreflightAstContract(fixtureSource, fileName, []),
-    (error) => error?.code === "ERR_ASSERTION"
+for (const [fileName, fixtureSource, expectedViolation] of forbiddenAstFixtures) {
+  const violations = preflightAstContractViolations(fixtureSource, fileName, []);
+  assert.ok(
+    violations.includes(expectedViolation),
+    `${fileName} must report ${expectedViolation}; got ${violations.join(", ")}`
   );
 }
-assert.throws(
-  () => assertPreflightAstContract("import {", "parse-error.ts", []),
-  (error) => error?.code === "ERR_ASSERTION"
+const parseErrorSourceFile = ts.createSourceFile(
+  "parse-error.ts",
+  "import {",
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS
 );
+assert.ok(parseErrorSourceFile.parseDiagnostics.length > 0);
 
 assertPreflightAstContract(
   preflightRouteSource,
@@ -1258,6 +1339,153 @@ function jsxIdentifierAttribute(node, name) {
       ? attribute.initializer.expression
       : null;
   return expression && ts.isIdentifier(expression) ? expression.text : null;
+}
+
+const LOGIN_FORM_AST_VIOLATION = Object.freeze({
+  FORM_ACTION_PRESENT: "FORM_ACTION_PRESENT",
+  RESULT_DESTRUCTURING_PRESENT: "RESULT_DESTRUCTURING_PRESENT",
+  RESULT_USE_NOT_ALLOWED: "RESULT_USE_NOT_ALLOWED",
+  SET_STATUS_NON_ENUM: "SET_STATUS_NON_ENUM",
+  OUTPUT_NOT_STATUS_ONLY: "OUTPUT_NOT_STATUS_ONLY",
+});
+
+const APPROVED_LOGIN_STATUS_VALUES = new Set([
+  "LOGIN_REQUIRED",
+  "LOGIN_IN_PROGRESS",
+  "LOGIN_ACCEPTED",
+  "STOP_LOGIN_REJECTED",
+  "STOP_LOGIN_ERROR",
+]);
+
+function isApprovedLoginResultCondition(node) {
+  return (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    ts.isPropertyAccessExpression(node.left) &&
+    ts.isIdentifier(node.left.expression) &&
+    node.left.expression.text === "result" &&
+    node.left.name.text === "ok" &&
+    Boolean(node.left.questionDotToken) &&
+    node.right.kind === ts.SyntaxKind.TrueKeyword
+  );
+}
+
+function isApprovedSetStatusArgument(node) {
+  if (ts.isStringLiteral(node)) {
+    return APPROVED_LOGIN_STATUS_VALUES.has(node.text);
+  }
+  return (
+    ts.isConditionalExpression(node) &&
+    isApprovedLoginResultCondition(node.condition) &&
+    ts.isStringLiteral(node.whenTrue) &&
+    node.whenTrue.text === "LOGIN_ACCEPTED" &&
+    ts.isStringLiteral(node.whenFalse) &&
+    node.whenFalse.text === "STOP_LOGIN_REJECTED"
+  );
+}
+
+function analyzeLoginFormAstContract(moduleSource, fileName) {
+  const sourceFile = parseTypeScriptSource(moduleSource, fileName);
+  const violationCodes = new Set();
+
+  const jsxOpeningElements = collectAstNodes(
+    sourceFile,
+    (node) => ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)
+  );
+  for (const element of jsxOpeningElements) {
+    if (
+      (jsxTagName(element) === "form" && jsxAttribute(element, "action")) ||
+      jsxAttribute(element, "formAction")
+    ) {
+      violationCodes.add(LOGIN_FORM_AST_VIOLATION.FORM_ACTION_PRESENT);
+    }
+  }
+
+  const resultDestructuringDeclarations = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      node.initializer &&
+      ts.isIdentifier(node.initializer) &&
+      node.initializer.text === "result"
+  );
+  if (resultDestructuringDeclarations.length > 0) {
+    violationCodes.add(
+      LOGIN_FORM_AST_VIOLATION.RESULT_DESTRUCTURING_PRESENT
+    );
+  }
+
+  const resultIdentifiers = collectAstNodes(
+    sourceFile,
+    (node) => ts.isIdentifier(node) && node.text === "result"
+  );
+  for (const identifier of resultIdentifiers) {
+    const parent = identifier.parent;
+    if (ts.isVariableDeclaration(parent) && parent.name === identifier) {
+      continue;
+    }
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === identifier &&
+      ts.isObjectBindingPattern(parent.name)
+    ) {
+      continue;
+    }
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === identifier &&
+      isApprovedLoginResultCondition(parent.parent)
+    ) {
+      continue;
+    }
+    violationCodes.add(LOGIN_FORM_AST_VIOLATION.RESULT_USE_NOT_ALLOWED);
+  }
+
+  const setStatusCalls = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "setStatus"
+  );
+  for (const call of setStatusCalls) {
+    if (
+      call.arguments.length !== 1 ||
+      !isApprovedSetStatusArgument(call.arguments[0])
+    ) {
+      violationCodes.add(LOGIN_FORM_AST_VIOLATION.SET_STATUS_NON_ENUM);
+    }
+  }
+
+  const outputElements = collectAstNodes(
+    sourceFile,
+    (node) =>
+      (ts.isJsxElement(node) &&
+        jsxTagName(node.openingElement) === "output") ||
+      (ts.isJsxSelfClosingElement(node) && jsxTagName(node) === "output")
+  );
+  const [outputElement] = outputElements;
+  const meaningfulOutputChildren =
+    outputElement && ts.isJsxElement(outputElement)
+    ? outputElement.children.filter(
+        (child) => !ts.isJsxText(child) || child.text.trim().length > 0
+      )
+    : [];
+  if (
+    outputElements.length !== 1 ||
+    !outputElement ||
+    !ts.isJsxElement(outputElement) ||
+    meaningfulOutputChildren.length !== 1 ||
+    !ts.isJsxExpression(meaningfulOutputChildren[0]) ||
+    !meaningfulOutputChildren[0].expression ||
+    !ts.isIdentifier(meaningfulOutputChildren[0].expression) ||
+    meaningfulOutputChildren[0].expression.text !== "status"
+  ) {
+    violationCodes.add(LOGIN_FORM_AST_VIOLATION.OUTPUT_NOT_STATUS_ONLY);
+  }
+
+  return { sourceFile, violationCodes: [...violationCodes] };
 }
 
 function assertLoginPageContract(moduleSource) {
@@ -1358,7 +1586,9 @@ function assertLoginPageContract(moduleSource) {
 function assertLoginFormContract(moduleSource) {
   const fileName =
     "app/development/readonly-reauth/preflight-login/preflight-login-form.tsx";
-  const sourceFile = parseTypeScriptSource(moduleSource, fileName);
+  const analysis = analyzeLoginFormAstContract(moduleSource, fileName);
+  assert.deepEqual(analysis.violationCodes, []);
+  const { sourceFile } = analysis;
   const signInCalls = collectAstNodes(
     sourceFile,
     (node) =>
@@ -1407,8 +1637,6 @@ function assertLoginFormContract(moduleSource) {
   );
   assert.equal(forms.length, 1);
   assert.equal(jsxIdentifierAttribute(forms[0], "onSubmit"), "handleSubmit");
-  assert.equal(jsxAttribute(forms[0], "action"), undefined);
-  assert.equal(jsxAttribute(forms[0], "formAction"), undefined);
 
   const preventDefaultCalls = collectAstNodes(
     sourceFile,
@@ -1522,6 +1750,154 @@ function assertLoginFormContract(moduleSource) {
     0
   );
   assert.equal(moduleSource.includes("/api/base/readonly-reauth/preflight"), false);
+}
+
+function replaceLoginFormFixtureOnce(
+  moduleSource,
+  search,
+  replacement,
+  fileName
+) {
+  assert.equal(
+    moduleSource.split(search).length - 1,
+    1,
+    `${fileName} fixture replacement target must occur exactly once`
+  );
+  return moduleSource.replace(search, replacement);
+}
+
+const loginFormFixtureEol = preflightLoginFormSource.includes("\r\n")
+  ? "\r\n"
+  : "\n";
+const loginStatusStateLine =
+  '  const [status, setStatus] = useState<LoginStatus>("LOGIN_REQUIRED");';
+const signInResultClosing = ["        redirect: false,", "      });"].join(
+  loginFormFixtureEol
+);
+const outputClosing = "          </output>";
+
+const allowedLoginFormBehaviorFixture = preflightLoginFormSource;
+assert.deepEqual(
+  analyzeLoginFormAstContract(
+    allowedLoginFormBehaviorFixture,
+    "allowed-login-form-behavior.tsx"
+  ).violationCodes,
+  []
+);
+
+const formActionAttributeFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  '<form onSubmit={handleSubmit}',
+  '<form action="/orders" onSubmit={handleSubmit}',
+  "form-action-present.tsx"
+);
+const buttonFormActionFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  'type="submit"',
+  'type="submit" formAction="/orders"',
+  "button-form-action-present.tsx"
+);
+
+let resultDestructuringFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  loginStatusStateLine,
+  [
+    loginStatusStateLine,
+    '  const [exposedError, setExposedError] = useState<string | null>(null);',
+  ].join(loginFormFixtureEol),
+  "result-destructuring-present.tsx"
+);
+resultDestructuringFixture = replaceLoginFormFixtureOnce(
+  resultDestructuringFixture,
+  signInResultClosing,
+  [
+    signInResultClosing,
+    "      const { error } = result;",
+    "      setExposedError(error ?? null);",
+  ].join(loginFormFixtureEol),
+  "result-destructuring-present.tsx"
+);
+resultDestructuringFixture = replaceLoginFormFixtureOnce(
+  resultDestructuringFixture,
+  outputClosing,
+  [
+    outputClosing,
+    "          {exposedError === null ? null : <p>{exposedError}</p>}",
+  ].join(loginFormFixtureEol),
+  "result-destructuring-present.tsx"
+);
+
+const arbitrarySetStatusFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  '    setStatus("LOGIN_IN_PROGRESS");',
+  [
+    '    const arbitraryValue = "ARBITRARY_STATUS";',
+    "    setStatus(arbitraryValue);",
+  ].join(loginFormFixtureEol),
+  "set-status-non-enum.tsx"
+);
+
+let outputNotStatusFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  loginStatusStateLine,
+  [loginStatusStateLine, '  const otherValue = "OTHER_VALUE";'].join(
+    loginFormFixtureEol
+  ),
+  "output-not-status-only.tsx"
+);
+outputNotStatusFixture = replaceLoginFormFixtureOnce(
+  outputNotStatusFixture,
+  "{status}",
+  "{otherValue}",
+  "output-not-status-only.tsx"
+);
+
+const resultUseNotAllowedFixture = replaceLoginFormFixtureOnce(
+  allowedLoginFormBehaviorFixture,
+  signInResultClosing,
+  [signInResultClosing, "      void result;"].join(loginFormFixtureEol),
+  "result-use-not-allowed.tsx"
+);
+
+const forbiddenLoginFormFixtures = [
+  [
+    "form-action-present.tsx",
+    formActionAttributeFixture,
+    LOGIN_FORM_AST_VIOLATION.FORM_ACTION_PRESENT,
+  ],
+  [
+    "button-form-action-present.tsx",
+    buttonFormActionFixture,
+    LOGIN_FORM_AST_VIOLATION.FORM_ACTION_PRESENT,
+  ],
+  [
+    "result-destructuring-present.tsx",
+    resultDestructuringFixture,
+    LOGIN_FORM_AST_VIOLATION.RESULT_DESTRUCTURING_PRESENT,
+  ],
+  [
+    "set-status-non-enum.tsx",
+    arbitrarySetStatusFixture,
+    LOGIN_FORM_AST_VIOLATION.SET_STATUS_NON_ENUM,
+  ],
+  [
+    "output-not-status-only.tsx",
+    outputNotStatusFixture,
+    LOGIN_FORM_AST_VIOLATION.OUTPUT_NOT_STATUS_ONLY,
+  ],
+  [
+    "result-use-not-allowed.tsx",
+    resultUseNotAllowedFixture,
+    LOGIN_FORM_AST_VIOLATION.RESULT_USE_NOT_ALLOWED,
+  ],
+];
+for (const [fileName, fixtureSource, expectedViolation] of forbiddenLoginFormFixtures) {
+  const analysis = analyzeLoginFormAstContract(fixtureSource, fileName);
+  assert.deepEqual(
+    analysis.violationCodes,
+    [expectedViolation],
+    `${fileName} must fail only with ${expectedViolation}`
+  );
 }
 
 assertLoginPageContract(preflightLoginPageSource);
