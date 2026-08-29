@@ -768,6 +768,12 @@ const preflightSource = await source("lib/base-readonly-oauth-preflight.ts");
 const preflightRouteSource = await source(
   "app/api/base/readonly-reauth/preflight/route.ts"
 );
+const preflightLoginPageSource = await source(
+  "app/development/readonly-reauth/preflight-login/page.tsx"
+);
+const preflightLoginFormSource = await source(
+  "app/development/readonly-reauth/preflight-login/preflight-login-form.tsx"
+);
 const rawSdkPackage = ["@", "upstash", "/redis"].join("");
 for (const moduleSource of [oauthSource, controlSource, cleanupSource, oauthRuntimeSource]) {
   assert.equal(moduleSource.includes(rawSdkPackage), false);
@@ -837,20 +843,97 @@ const helperImportContract = [
     ],
   },
 ];
+const loginPageImportContract = [
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "next/navigation",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "notFound", local: "notFound", specifierTypeOnly: false },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "@/lib/runtime-mode",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      {
+        imported: "matchesDevelopmentPreviewRuntimeIdentity",
+        local: "matchesDevelopmentPreviewRuntimeIdentity",
+        specifierTypeOnly: false,
+      },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "./preflight-login-form",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      {
+        imported: "PreflightLoginForm",
+        local: "PreflightLoginForm",
+        specifierTypeOnly: false,
+      },
+    ],
+  },
+];
+const loginFormImportContract = [
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "react",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "useState", local: "useState", specifierTypeOnly: false },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "react",
+    clauseTypeOnly: true,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "FormEvent", local: "FormEvent", specifierTypeOnly: false },
+    ],
+  },
+  {
+    declarationKind: "ImportDeclaration",
+    moduleSpecifier: "next-auth/react",
+    clauseTypeOnly: false,
+    defaultImport: null,
+    namespaceImport: null,
+    namedImports: [
+      { imported: "signIn", local: "signIn", specifierTypeOnly: false },
+    ],
+  },
+];
 
-function analyzePreflightAst(moduleSource, fileName) {
+function parseTypeScriptSource(moduleSource, fileName) {
   const sourceFile = ts.createSourceFile(
     fileName,
     moduleSource,
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TS
+    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
   assert.equal(
     sourceFile.parseDiagnostics.length,
     0,
     `${fileName} must parse without diagnostics`
   );
+  return sourceFile;
+}
+
+function analyzePreflightAst(moduleSource, fileName) {
+  const sourceFile = parseTypeScriptSource(moduleSource, fileName);
 
   const imports = [];
   const violations = [];
@@ -896,6 +979,39 @@ function analyzePreflightAst(moduleSource, fileName) {
       if (ts.isIdentifier(node.expression) && node.expression.text === "redis") {
         violations.push("redis_access");
       }
+      if (
+        ts.isIdentifier(node.expression) &&
+        ["localStorage", "sessionStorage"].includes(node.expression.text)
+      ) {
+        violations.push(`${node.expression.text}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "document" &&
+        node.name.text === "cookie"
+      ) {
+        violations.push("document_cookie_access");
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "window" &&
+        ["location", "open"].includes(node.name.text)
+      ) {
+        violations.push(`window_${node.name.text}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        ["location", "router", "history"].includes(node.expression.text)
+      ) {
+        violations.push(`${node.expression.text}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "result" &&
+        ["url", "error", "status"].includes(node.name.text)
+      ) {
+        violations.push(`result_${node.name.text}_access`);
+      }
     }
     if (ts.isElementAccessExpression(node)) {
       if (ts.isIdentifier(node.expression) && node.expression.text === "console") {
@@ -903,6 +1019,42 @@ function analyzePreflightAst(moduleSource, fileName) {
       }
       if (ts.isIdentifier(node.expression) && node.expression.text === "redis") {
         violations.push("redis_access");
+      }
+      const elementName = ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : null;
+      if (
+        ts.isIdentifier(node.expression) &&
+        ["localStorage", "sessionStorage"].includes(node.expression.text)
+      ) {
+        violations.push(`${node.expression.text}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "document" &&
+        elementName === "cookie"
+      ) {
+        violations.push("document_cookie_access");
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "window" &&
+        ["location", "open"].includes(elementName)
+      ) {
+        violations.push(`window_${elementName}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        ["location", "router", "history"].includes(node.expression.text)
+      ) {
+        violations.push(`${node.expression.text}_access`);
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "result" &&
+        ["url", "error", "status"].includes(elementName)
+      ) {
+        violations.push(`result_${elementName}_access`);
       }
     }
 
@@ -968,6 +1120,16 @@ const allowedRouteImportFixture = [
 ].join("\n");
 const allowedHelperImportFixture =
   'import { matchesDevelopmentPreviewRuntimeIdentity } from "./runtime-mode";';
+const allowedLoginPageImportFixture = [
+  'import { notFound } from "next/navigation";',
+  'import { matchesDevelopmentPreviewRuntimeIdentity } from "@/lib/runtime-mode";',
+  'import { PreflightLoginForm } from "./preflight-login-form";',
+].join("\n");
+const allowedLoginFormImportFixture = [
+  'import { useState } from "react";',
+  'import type { FormEvent } from "react";',
+  'import { signIn } from "next-auth/react";',
+].join("\n");
 assertPreflightAstContract(
   allowedRouteImportFixture,
   "allowed-route-imports.ts",
@@ -977,6 +1139,16 @@ assertPreflightAstContract(
   allowedHelperImportFixture,
   "allowed-helper-import.ts",
   helperImportContract
+);
+assertPreflightAstContract(
+  allowedLoginPageImportFixture,
+  "allowed-login-page-imports.tsx",
+  loginPageImportContract
+);
+assertPreflightAstContract(
+  allowedLoginFormImportFixture,
+  "allowed-login-form-imports.tsx",
+  loginFormImportContract
 );
 
 const forbiddenAstFixtures = [
@@ -993,6 +1165,17 @@ const forbiddenAstFixtures = [
   ["element-fetch.ts", 'client["fetch"]("https://example.invalid");'],
   ["redis.ts", 'redis.get("key");'],
   ["console.ts", 'console.log("message");'],
+  ["local-storage.ts", 'localStorage.setItem("key", "value");'],
+  ["session-storage.ts", 'sessionStorage.setItem("key", "value");'],
+  ["document-cookie.ts", "document.cookie;"],
+  ["window-location.ts", 'window.location.href = "/target";'],
+  ["window-open.ts", 'window.open("/target");'],
+  ["location.ts", 'location.assign("/target");'],
+  ["router.ts", 'router.push("/target");'],
+  ["history.ts", 'history.pushState({}, "", "/target");'],
+  ["result-url.ts", "result.url;"],
+  ["result-error.ts", "result.error;"],
+  ["result-status.ts", "result.status;"],
   ["direct-redirect.ts", 'redirect("/target");'],
   ["response-redirect.ts", 'Response.redirect("/target");'],
   ["next-response-redirect.ts", 'NextResponse.redirect("/target");'],
@@ -1018,6 +1201,331 @@ assertPreflightAstContract(
   "lib/base-readonly-oauth-preflight.ts",
   helperImportContract
 );
+assertPreflightAstContract(
+  preflightLoginPageSource,
+  "app/development/readonly-reauth/preflight-login/page.tsx",
+  loginPageImportContract
+);
+assertPreflightAstContract(
+  preflightLoginFormSource,
+  "app/development/readonly-reauth/preflight-login/preflight-login-form.tsx",
+  loginFormImportContract
+);
+
+function collectAstNodes(sourceFile, predicate) {
+  const nodes = [];
+  function visit(node) {
+    if (predicate(node)) nodes.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return nodes;
+}
+
+function findAstAncestor(node, predicate) {
+  let ancestor = node.parent;
+  while (ancestor) {
+    if (predicate(ancestor)) return ancestor;
+    ancestor = ancestor.parent;
+  }
+  return null;
+}
+
+function jsxTagName(node) {
+  return ts.isIdentifier(node.tagName) ? node.tagName.text : null;
+}
+
+function jsxAttribute(node, name) {
+  return node.attributes.properties.find(
+    (property) =>
+      ts.isJsxAttribute(property) &&
+      ts.isIdentifier(property.name) &&
+      property.name.text === name
+  );
+}
+
+function jsxStringAttribute(node, name) {
+  const attribute = jsxAttribute(node, name);
+  return attribute && attribute.initializer && ts.isStringLiteral(attribute.initializer)
+    ? attribute.initializer.text
+    : null;
+}
+
+function jsxIdentifierAttribute(node, name) {
+  const attribute = jsxAttribute(node, name);
+  const expression =
+    attribute?.initializer && ts.isJsxExpression(attribute.initializer)
+      ? attribute.initializer.expression
+      : null;
+  return expression && ts.isIdentifier(expression) ? expression.text : null;
+}
+
+function assertLoginPageContract(moduleSource) {
+  const fileName = "app/development/readonly-reauth/preflight-login/page.tsx";
+  const sourceFile = parseTypeScriptSource(moduleSource, fileName);
+  const exportedStrings = new Map();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    const isExported = statement.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+    );
+    if (!isExported) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer &&
+        ts.isStringLiteral(declaration.initializer)
+      ) {
+        exportedStrings.set(declaration.name.text, declaration.initializer.text);
+      }
+    }
+  }
+  assert.equal(exportedStrings.get("runtime"), "nodejs");
+  assert.equal(exportedStrings.get("dynamic"), "force-dynamic");
+
+  const directives = sourceFile.statements
+    .filter(ts.isExpressionStatement)
+    .map((statement) => statement.expression)
+    .filter(ts.isStringLiteral)
+    .map((literal) => literal.text);
+  assert.equal(directives.includes("use cache"), false);
+  assert.equal(collectAstNodes(sourceFile, ts.isTryStatement).length, 0);
+
+  const identityCalls = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "matchesDevelopmentPreviewRuntimeIdentity"
+  );
+  assert.equal(identityCalls.length, 1);
+  const [identityCall] = identityCalls;
+  assert.equal(identityCall.arguments.length, 1);
+  assert.ok(
+    ts.isPropertyAccessExpression(identityCall.arguments[0]) &&
+      ts.isIdentifier(identityCall.arguments[0].expression) &&
+      identityCall.arguments[0].expression.text === "process" &&
+      identityCall.arguments[0].name.text === "env"
+  );
+  const pageFunction = findAstAncestor(identityCall, ts.isFunctionDeclaration);
+  assert.ok(pageFunction);
+  assert.equal(pageFunction.name?.text, "DevelopmentPreflightLoginPage");
+  assert.ok(
+    pageFunction.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+    )
+  );
+  assert.ok(
+    pageFunction.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword
+    )
+  );
+
+  const notFoundCalls = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "notFound"
+  );
+  assert.equal(notFoundCalls.length, 1);
+  assert.equal(notFoundCalls[0].arguments.length, 0);
+  const identityGuards = collectAstNodes(
+    pageFunction,
+    (node) =>
+      ts.isIfStatement(node) &&
+      ts.isPrefixUnaryExpression(node.expression) &&
+      node.expression.operator === ts.SyntaxKind.ExclamationToken &&
+      node.expression.operand === identityCall
+  );
+  assert.equal(identityGuards.length, 1);
+  assert.ok(
+    notFoundCalls[0].pos >= identityGuards[0].thenStatement.pos &&
+      notFoundCalls[0].end <= identityGuards[0].thenStatement.end
+  );
+
+  const formElements = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isJsxSelfClosingElement(node) && jsxTagName(node) === "PreflightLoginForm"
+  );
+  assert.equal(formElements.length, 1);
+  assert.equal(formElements[0].attributes.properties.length, 0);
+  assert.ok(identityCall.pos < notFoundCalls[0].pos);
+  assert.ok(notFoundCalls[0].pos < formElements[0].pos);
+}
+
+function assertLoginFormContract(moduleSource) {
+  const fileName =
+    "app/development/readonly-reauth/preflight-login/preflight-login-form.tsx";
+  const sourceFile = parseTypeScriptSource(moduleSource, fileName);
+  const signInCalls = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "signIn"
+  );
+  assert.equal(signInCalls.length, 1);
+  const [signInCall] = signInCalls;
+  const submitFunction = findAstAncestor(signInCall, ts.isFunctionDeclaration);
+  assert.ok(submitFunction);
+  assert.equal(submitFunction.name?.text, "handleSubmit");
+  assert.equal(signInCall.arguments.length, 2);
+  assert.ok(
+    ts.isStringLiteral(signInCall.arguments[0]) &&
+      signInCall.arguments[0].text === "credentials"
+  );
+  assert.ok(ts.isObjectLiteralExpression(signInCall.arguments[1]));
+  const signInProperties = signInCall.arguments[1].properties;
+  assert.deepEqual(
+    signInProperties.map((property) => property.name?.getText(sourceFile) ?? null),
+    ["username", "password", "callbackUrl", "redirect"]
+  );
+  assert.ok(
+    ts.isShorthandPropertyAssignment(signInProperties[0]) &&
+      signInProperties[0].name.text === "username"
+  );
+  assert.ok(
+    ts.isShorthandPropertyAssignment(signInProperties[1]) &&
+      signInProperties[1].name.text === "password"
+  );
+  assert.ok(
+    ts.isPropertyAssignment(signInProperties[2]) &&
+      ts.isStringLiteral(signInProperties[2].initializer) &&
+      signInProperties[2].initializer.text ===
+        "/development/readonly-reauth/preflight-login"
+  );
+  assert.ok(
+    ts.isPropertyAssignment(signInProperties[3]) &&
+      signInProperties[3].initializer.kind === ts.SyntaxKind.FalseKeyword
+  );
+
+  const forms = collectAstNodes(
+    sourceFile,
+    (node) => ts.isJsxOpeningElement(node) && jsxTagName(node) === "form"
+  );
+  assert.equal(forms.length, 1);
+  assert.equal(jsxIdentifierAttribute(forms[0], "onSubmit"), "handleSubmit");
+  assert.equal(jsxAttribute(forms[0], "action"), undefined);
+  assert.equal(jsxAttribute(forms[0], "formAction"), undefined);
+
+  const preventDefaultCalls = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "event" &&
+      node.expression.name.text === "preventDefault"
+  );
+  assert.equal(preventDefaultCalls.length, 1);
+
+  const inputs = collectAstNodes(
+    sourceFile,
+    (node) => ts.isJsxSelfClosingElement(node) && jsxTagName(node) === "input"
+  );
+  assert.equal(inputs.length, 2);
+  const inputsByName = new Map(
+    inputs.map((input) => [jsxStringAttribute(input, "name"), input])
+  );
+  assert.deepEqual([...inputsByName.keys()].sort(), ["password", "username"]);
+  assert.equal(jsxStringAttribute(inputsByName.get("username"), "type"), "text");
+  assert.equal(
+    jsxIdentifierAttribute(inputsByName.get("username"), "value"),
+    "username"
+  );
+  assert.equal(
+    jsxStringAttribute(inputsByName.get("password"), "type"),
+    "password"
+  );
+  assert.equal(
+    jsxIdentifierAttribute(inputsByName.get("password"), "value"),
+    "password"
+  );
+  assert.equal(collectAstNodes(sourceFile, ts.isJsxSpreadAttribute).length, 0);
+
+  const credentialIdentifiersInJsx = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isIdentifier(node) && ["username", "password"].includes(node.text)
+  ).filter((identifier) => {
+    let ancestor = identifier.parent;
+    while (ancestor && !ts.isSourceFile(ancestor)) {
+      if (ts.isJsxExpression(ancestor)) return true;
+      ancestor = ancestor.parent;
+    }
+    return false;
+  });
+  assert.equal(credentialIdentifiersInJsx.length, 2);
+  for (const identifier of credentialIdentifiersInJsx) {
+    assert.ok(ts.isJsxExpression(identifier.parent));
+    const valueAttribute = identifier.parent.parent;
+    assert.ok(ts.isJsxAttribute(valueAttribute));
+    assert.equal(valueAttribute.name.getText(sourceFile), "value");
+    const input = valueAttribute.parent.parent;
+    assert.ok(ts.isJsxSelfClosingElement(input));
+    assert.equal(
+      jsxStringAttribute(input, "name"),
+      identifier.text
+    );
+  }
+
+  const loginStatusValues = new Set(
+    collectAstNodes(sourceFile, ts.isStringLiteral)
+      .map((literal) => literal.text)
+      .filter((value) => /^(LOGIN_|STOP_LOGIN_)/.test(value))
+  );
+  assert.deepEqual([...loginStatusValues].sort(), [
+    "LOGIN_ACCEPTED",
+    "LOGIN_IN_PROGRESS",
+    "LOGIN_REQUIRED",
+    "STOP_LOGIN_ERROR",
+    "STOP_LOGIN_REJECTED",
+  ]);
+
+  const acceptedConditionals = collectAstNodes(
+    sourceFile,
+    (node) =>
+      ts.isConditionalExpression(node) &&
+      ts.isStringLiteral(node.whenTrue) &&
+      node.whenTrue.text === "LOGIN_ACCEPTED" &&
+      ts.isStringLiteral(node.whenFalse) &&
+      node.whenFalse.text === "STOP_LOGIN_REJECTED"
+  );
+  assert.equal(acceptedConditionals.length, 1);
+  const acceptedCondition = acceptedConditionals[0].condition;
+  assert.ok(ts.isBinaryExpression(acceptedCondition));
+  assert.equal(
+    acceptedCondition.operatorToken.kind,
+    ts.SyntaxKind.EqualsEqualsEqualsToken
+  );
+  assert.ok(
+    ts.isPropertyAccessExpression(acceptedCondition.left) &&
+      ts.isIdentifier(acceptedCondition.left.expression) &&
+      acceptedCondition.left.expression.text === "result" &&
+      acceptedCondition.left.name.text === "ok" &&
+      acceptedCondition.left.questionDotToken
+  );
+  assert.equal(acceptedCondition.right.kind, ts.SyntaxKind.TrueKeyword);
+
+  const catchClauses = collectAstNodes(sourceFile, ts.isCatchClause);
+  assert.equal(catchClauses.length, 1);
+  assert.equal(catchClauses[0].variableDeclaration, undefined);
+  assert.equal(
+    collectAstNodes(
+      sourceFile,
+      (node) =>
+        (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+        jsxTagName(node) === "a"
+    ).length,
+    0
+  );
+  assert.equal(moduleSource.includes("/api/base/readonly-reauth/preflight"), false);
+}
+
+assertLoginPageContract(preflightLoginPageSource);
+assertLoginFormContract(preflightLoginFormSource);
 assert.ok(preflightSource.includes("Object.hasOwn(env, name)"));
 assert.equal(preflightSource.includes("env[name]"), false);
 assert.ok(preflightRouteSource.includes('export const runtime = "nodejs"'));
