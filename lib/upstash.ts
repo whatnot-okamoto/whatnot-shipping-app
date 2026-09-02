@@ -1,17 +1,23 @@
 import { Redis } from "@upstash/redis";
 import { getLocalMemoryRedis } from "@/lib/memory-redis";
 import {
+  assertDevelopmentRedis,
   createDevelopmentRedis,
   createProductionRedis,
+  type DevelopmentRedisLike,
 } from "@/lib/namespaced-redis";
 import type { RedisLike } from "@/lib/redis-like";
 import type {
   RedisPipelineLike,
   RedisSetOptions,
 } from "@/lib/redis-like";
-import { resolveRuntimeConfig } from "@/lib/runtime-mode";
+import {
+  assertDevelopmentRuntime,
+  resolveRuntimeConfig,
+} from "@/lib/runtime-mode";
 
 const runtimeConfig = resolveRuntimeConfig();
+const DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS = 10_000;
 
 const COMPARE_AND_DELETE_SCRIPT = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -141,3 +147,36 @@ function createRedisClient(): RedisLike {
 }
 
 export const redis = createRedisClient();
+
+/**
+ * Creates the fixed Development atomic diagnostic transport.
+ *
+ * This is intentionally separate from the normal runtime singleton so the
+ * diagnostic can disable transport retries without changing Production or
+ * Development application behavior. The raw client is never exported.
+ */
+export function createDevelopmentAtomicVerificationRedis(): DevelopmentRedisLike {
+  assertDevelopmentRuntime(
+    runtimeConfig,
+    "Development Upstash atomic verification"
+  );
+
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    throw new Error(
+      "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set for atomic verification"
+    );
+  }
+
+  const rawClient = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    retry: false,
+    signal: () => AbortSignal.timeout(DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS),
+  });
+  const namespaced = createDevelopmentRedis(new UpstashRedisAdapter(rawClient));
+  assertDevelopmentRedis(namespaced);
+  return namespaced;
+}
+
+export const DEVELOPMENT_ATOMIC_VERIFICATION_TIMEOUT_MS =
+  DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS;

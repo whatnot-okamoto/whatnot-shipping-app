@@ -14,8 +14,11 @@
     "test:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth.mjs",
     "test:base-readonly-oauth-cleanup": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth-cleanup.mjs",
     "test:base-readonly-api-client": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-api-client.mjs",
+    "test:upstash-atomic-diagnostic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/test-upstash-atomic-diagnostic.mjs",
     "test:mock-dev-lifecycle": "node scripts/test-mock-dev-lifecycle.mjs",
     "cleanup:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/cleanup-base-readonly-oauth.mjs",
+    "diagnose:upstash-atomic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/diagnose-upstash-atomic.mjs",
+    "recover:upstash-atomic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/recover-upstash-atomic.mjs",
     "diagnose:partial-cancel": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/diagnose-partial-cancel.mjs"
   },
   "dependencies": {

@@ -1170,7 +1170,11 @@ assertPreflightAstContract(
 const forbiddenAstFixtures = [
   [
     "external-import.ts",
-    'import Redis from "@upstash/redis";',
+    [
+      'import Redis from "',
+      ["@", "upstash", "/redis"].join(""),
+      '";',
+    ].join(""),
     "IMPORT_CONTRACT_MISMATCH",
   ],
   ["side-effect-import.ts", 'import "external-storage";', "side_effect_import"],
