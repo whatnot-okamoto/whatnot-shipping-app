@@ -158,6 +158,28 @@ assert.equal(UPSTASH_ATOMIC_DIAGNOSTIC_DUMMY_VALUES.length, 4);
   assert.deepEqual(raw.calls.map(([operation]) => operation), ["get", "get"]);
 }
 
+// A guard that appears after the initial reads is a diagnostic-key race, not
+// a contract mismatch. Stop immediately after GET, GET, SET NX.
+{
+  class RacingGuardRedis extends RecordingRedis {
+    async set(key, value, options) {
+      this.record("set", [key, value, options]);
+      return null;
+    }
+  }
+  const raw = new RacingGuardRedis();
+  const redis = createDevelopmentRedis(raw);
+  assert.equal(
+    await runUpstashAtomicDiagnostic(redis),
+    "STOP_DIAGNOSTIC_KEYS_PRESENT"
+  );
+  assert.deepEqual(raw.calls.map(([operation]) => operation), [
+    "get",
+    "get",
+    "set",
+  ]);
+}
+
 // A confirmed unexpected boolean stops as a contract mismatch.
 {
   class MismatchedBooleanRedis extends RecordingRedis {

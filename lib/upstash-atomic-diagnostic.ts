@@ -53,7 +53,7 @@ export async function runUpstashAtomicDiagnostic(
       UPSTASH_ATOMIC_DIAGNOSTIC_G1,
       { nx: true, ex: UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_TTL_SECONDS }
     );
-    if (guardCreated !== "OK") return "STOP_CONTRACT_MISMATCH";
+    if (guardCreated === null) return "STOP_DIAGNOSTIC_KEYS_PRESENT";
 
     const mismatchedGuardWrite = await redis.setIfValueMatches(
       UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_KEY,
