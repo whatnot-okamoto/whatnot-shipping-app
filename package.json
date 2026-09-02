@@ -17,6 +17,7 @@
     "test:upstash-atomic-diagnostic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/test-upstash-atomic-diagnostic.mjs",
     "test:upstash-atomic-launchers": "node scripts/test-upstash-atomic-launchers.mjs",
     "test:upstash-atomic-import-boundary": "node --no-warnings --experimental-strip-types scripts/test-upstash-atomic-import-boundary.mjs",
+    "test:upstash-atomic-readonly": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/test-upstash-atomic-readonly.mjs",
     "test:mock-dev-lifecycle": "node scripts/test-mock-dev-lifecycle.mjs",
     "cleanup:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/cleanup-base-readonly-oauth.mjs",
     "diagnose:upstash-atomic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/upstash-atomic-cli-loader.mjs scripts/diagnose-upstash-atomic.mjs",

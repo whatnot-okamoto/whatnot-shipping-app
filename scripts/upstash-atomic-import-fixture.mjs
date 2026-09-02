@@ -52,7 +52,7 @@ async function verifyImportBoundary() {
     normalOptions.hasSignal ||
     !atomicOptions.hasUrl ||
     !atomicOptions.hasToken ||
-    atomicOptions.retry !== false ||
+    atomicOptions.retry?.retries !== 0 ||
     !atomicOptions.hasSignal
   ) {
     throw new Error("Atomic verification factory options did not match.");

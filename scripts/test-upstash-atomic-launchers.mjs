@@ -20,9 +20,12 @@ const repositoryRoot = path.resolve(
 const scriptsRoot = path.join(repositoryRoot, "scripts");
 const diagnosticLauncherName = "invoke-upstash-atomic-diagnostic.ps1";
 const recoveryLauncherName = "invoke-upstash-atomic-recovery.ps1";
+const readOnlyLauncherName = "invoke-upstash-atomic-readonly.ps1";
 const diagnosticCliName = "diagnose-upstash-atomic.mjs";
 const recoveryCliName = "recover-upstash-atomic.mjs";
+const readOnlyCliName = "probe-upstash-atomic-readonly.mjs";
 const loaderName = "upstash-atomic-cli-loader.mjs";
+const commonLauncherName = "upstash-atomic-launcher-common.ps1";
 const dummyUrl = "https://nonsecret-diagnostic.invalid";
 const dummyToken = "nonsecret-diagnostic-token";
 const rawSentinel = "RAW_CHILD_DETAIL_MUST_NOT_SURFACE";
@@ -40,6 +43,14 @@ const recoveryResults = new Map([
   ["STOP_RECOVERY_INDETERMINATE", 21],
   ["STOP_RUNTIME_BOUNDARY", 13],
 ]);
+const readOnlyResults = new Map([
+  ["PASS_READONLY_BOUNDARY", 0],
+  ["STOP_READONLY_AUTH", 30],
+  ["STOP_READONLY_TIMEOUT", 31],
+  ["STOP_READONLY_TRANSPORT", 32],
+  ["STOP_READONLY_INDETERMINATE", 33],
+  ["STOP_RUNTIME_BOUNDARY", 13],
+]);
 
 const sources = {
   diagnostic: await readFile(
@@ -50,7 +61,15 @@ const sources = {
     path.join(scriptsRoot, recoveryLauncherName),
     "utf8"
   ),
+  readOnly: await readFile(
+    path.join(scriptsRoot, readOnlyLauncherName),
+    "utf8"
+  ),
 };
+const commonSource = await readFile(
+  path.join(scriptsRoot, commonLauncherName),
+  "utf8"
+);
 
 const allowedEnvironmentNames = [
   "APP_ENVIRONMENT",
@@ -77,6 +96,7 @@ for (const source of Object.values(sources)) {
   assert.match(source, /RedirectStandardOutput = \$true/);
   assert.match(source, /RedirectStandardError = \$true/);
   assert.match(source, /Environment\.Clear\(\)/);
+  assert.match(source, /Test-FixedUpstashLauncherInput/);
   assert.match(source, /StandardOutput\.ReadToEndAsync\(\)/);
   assert.match(source, /StandardError\.ReadToEndAsync\(\)/);
   assert.ok(
@@ -145,10 +165,23 @@ assert.ok(
     '$startInfo.ArgumentList.Add("./scripts/recover-upstash-atomic.mjs")'
   )
 );
+assert.ok(
+  sources.readOnly.includes(
+    '$startInfo.ArgumentList.Add("./scripts/probe-upstash-atomic-readonly.mjs")'
+  )
+);
 assert.equal(sources.diagnostic.includes(recoveryCliName), false);
+assert.equal(sources.diagnostic.includes(readOnlyCliName), false);
 assert.equal(sources.diagnostic.includes("--confirm-fixed-recovery"), false);
+assert.equal(sources.diagnostic.includes("--confirm-fixed-readonly"), false);
 assert.equal(sources.recovery.includes(diagnosticCliName), false);
+assert.equal(sources.recovery.includes(readOnlyCliName), false);
 assert.equal(sources.recovery.includes("--confirm-fixed-diagnostic"), false);
+assert.equal(sources.recovery.includes("--confirm-fixed-readonly"), false);
+assert.equal(sources.readOnly.includes(diagnosticCliName), false);
+assert.equal(sources.readOnly.includes(recoveryCliName), false);
+assert.equal(sources.readOnly.includes("--confirm-fixed-diagnostic"), false);
+assert.equal(sources.readOnly.includes("--confirm-fixed-recovery"), false);
 
 for (const [classification, exitCode] of diagnosticResults) {
   assert.ok(sources.diagnostic.includes(`"${classification}" = ${exitCode}`));
@@ -156,6 +189,28 @@ for (const [classification, exitCode] of diagnosticResults) {
 for (const [classification, exitCode] of recoveryResults) {
   assert.ok(sources.recovery.includes(`"${classification}" = ${exitCode}`));
 }
+for (const [classification, exitCode] of readOnlyResults) {
+  assert.ok(sources.readOnly.includes(`"${classification}" = ${exitCode}`));
+}
+
+for (const token of [
+  "IsNullOrWhiteSpace",
+  "[char]::IsWhiteSpace",
+  'Contains("`r")',
+  'Contains("`n")',
+  "UPSTASH_REDIS_REST_URL=",
+  "UPSTASH_REDIS_REST_TOKEN=",
+  "UriKind]::Absolute",
+  "UriSchemeHttps",
+  "UserInfo",
+  "Query",
+  "Fragment",
+]) {
+  assert.ok(commonSource.includes(token));
+}
+assert.equal(commonSource.includes("Write-Output"), false);
+assert.equal(commonSource.includes("Write-Host"), false);
+assert.equal(commonSource.includes("$env:"), false);
 
 const powerShellProbe = spawnSync(
   "pwsh.exe",
@@ -166,10 +221,10 @@ assert.equal(powerShellProbe.status, 0);
 const powerShellPath = powerShellProbe.stdout.trim();
 assert.ok(path.isAbsolute(powerShellPath));
 
-const powerShellEnvironment = {};
-for (const name of ["SystemRoot", "WINDIR"]) {
-  if (process.env[name]) powerShellEnvironment[name] = process.env[name];
-}
+const powerShellEnvironment = {
+  SystemRoot: "C:\\Windows",
+  WINDIR: "C:\\Windows",
+};
 
 const temporaryRoots = [];
 let testHostSequence = 0;
@@ -191,6 +246,10 @@ async function createFixtureTree(launcherName, cliName, launcherSource = null) {
   await writeFile(
     path.join(fixtureScripts, loaderName),
     "export async function resolve(specifier, context, nextResolve) { return nextResolve(specifier, context); }\n"
+  );
+  await copyFile(
+    path.join(scriptsRoot, commonLauncherName),
+    path.join(fixtureScripts, commonLauncherName)
   );
   return {
     root,
@@ -304,6 +363,7 @@ try {
   for (const [launcherName, cliName] of [
     [diagnosticLauncherName, diagnosticCliName],
     [recoveryLauncherName, recoveryCliName],
+    [readOnlyLauncherName, readOnlyCliName],
   ]) {
     const fixture = await createFixtureTree(launcherName, cliName);
     const result = runLauncher(fixture, {
@@ -341,6 +401,7 @@ try {
   for (const [launcherName, cliName, resultMap] of [
     [diagnosticLauncherName, diagnosticCliName, diagnosticResults],
     [recoveryLauncherName, recoveryCliName, recoveryResults],
+    [readOnlyLauncherName, readOnlyCliName, readOnlyResults],
   ]) {
     for (const [classification, exitCode] of resultMap) {
       const fixture = await createFixtureTree(launcherName, cliName);
@@ -355,6 +416,78 @@ try {
       const result = runLauncher(fixture);
       assertWrapperResult(result, classification, exitCode);
     }
+  }
+
+  // Invalid URL/token structure stops before the fixed child starts.
+  for (const [launcherName, cliName, passResult] of [
+    [diagnosticLauncherName, diagnosticCliName, "PASS_ATOMIC_CONTRACT"],
+    [recoveryLauncherName, recoveryCliName, "PASS_RECOVERY_COMPLETE"],
+  ]) {
+    const fixture = await createFixtureTree(launcherName, cliName);
+    await writeFile(
+      fixture.cliPath,
+      childSource({ stdout: `${passResult}\n`, exitCode: 0 })
+    );
+    const result = runLauncher(fixture, {
+      secureInputs: [
+        "https://nonsecret-diagnostic.invalid?query=1",
+        dummyToken,
+      ],
+    });
+    assertWrapperResult(result, "STOP_RUNTIME_BOUNDARY", 13);
+  }
+
+  for (const secureInputs of [
+    ["", dummyToken],
+    ["   ", dummyToken],
+    [` ${dummyUrl}`, dummyToken],
+    [`${dummyUrl} `, dummyToken],
+    [`${dummyUrl}\r`, dummyToken],
+    [`${dummyUrl}\n`, dummyToken],
+    [`UPSTASH_REDIS_REST_URL=${dummyUrl}`, dummyToken],
+    [dummyUrl, `UPSTASH_REDIS_REST_TOKEN=${dummyToken}`],
+    [`"${dummyUrl}"`, dummyToken],
+    [`'${dummyUrl}'`, dummyToken],
+    [dummyUrl, `"${dummyToken}"`],
+    ["http://nonsecret-readonly.invalid", dummyToken],
+    ["nonsecret-readonly.invalid", dummyToken],
+    ["https://user@nonsecret-readonly.invalid", dummyToken],
+    ["https://user:pass@nonsecret-readonly.invalid", dummyToken],
+    ["https://nonsecret-readonly.invalid?query=1", dummyToken],
+    ["https://nonsecret-readonly.invalid#fragment", dummyToken],
+    [dummyUrl, ` ${dummyToken}`],
+    [dummyUrl, `${dummyToken} `],
+    [dummyUrl, `${dummyToken}\r`],
+    [dummyUrl, `${dummyToken}\n`],
+  ]) {
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(
+      fixture.cliPath,
+      childSource({ stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 0 })
+    );
+    const result = runLauncher(fixture, { secureInputs });
+    assertWrapperResult(result, "STOP_RUNTIME_BOUNDARY", 13);
+  }
+
+  // Token internals are not constrained beyond the explicit boundary rules.
+  {
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(
+      fixture.cliPath,
+      childSource({ stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 0 })
+    );
+    const result = runLauncher(fixture, {
+      secureInputs: [dummyUrl, "nonsecret token internal space"],
+    });
+    assertWrapperResult(result, "PASS_READONLY_BOUNDARY", 0, [
+      "nonsecret token internal space",
+    ]);
   }
 
   // Any stderr, malformed/multiple stdout, or exit mismatch is indeterminate.
@@ -376,6 +509,62 @@ try {
     await writeFile(fixture.cliPath, childSource(scenario));
     const result = runLauncher(fixture);
     assertWrapperResult(result, "STOP_ATOMIC_INDETERMINATE", 12);
+  }
+
+  // The read-only child classification and wrapper conversion are separate
+  // scenarios even though both use the public indeterminate result.
+  {
+    const childFixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(
+      childFixture.cliPath,
+      childSource({
+        stdout: "STOP_READONLY_INDETERMINATE\n",
+        exitCode: 33,
+      })
+    );
+    assertWrapperResult(
+      runLauncher(childFixture),
+      "STOP_READONLY_INDETERMINATE",
+      33
+    );
+
+    const wrapperFixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(
+      wrapperFixture.cliPath,
+      childSource({
+        stdout: "PASS_READONLY_BOUNDARY\n",
+        stderr: `${rawSentinel}\n`,
+        exitCode: 0,
+      })
+    );
+    assertWrapperResult(
+      runLauncher(wrapperFixture),
+      "STOP_READONLY_INDETERMINATE",
+      33
+    );
+  }
+
+  for (const scenario of [
+    { stdout: `${rawSentinel}\n`, exitCode: 0 },
+    { stdout: "PASS_READONLY_BOUNDARY\nEXTRA\n", exitCode: 0 },
+    { stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 32 },
+  ]) {
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(fixture.cliPath, childSource(scenario));
+    assertWrapperResult(
+      runLauncher(fixture),
+      "STOP_READONLY_INDETERMINATE",
+      33
+    );
   }
 
   // The fixed child receives EOF rather than an inherited interactive stdin.

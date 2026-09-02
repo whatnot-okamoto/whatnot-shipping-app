@@ -57,15 +57,22 @@ try {
         "scripts",
         "diagnose-upstash-atomic.mjs"
     )
+    $commonPath = [System.IO.Path]::Combine(
+        $repositoryRoot,
+        "scripts",
+        "upstash-atomic-launcher-common.ps1"
+    )
 
     if (
         -not [System.IO.File]::Exists($NODE_PATH) -or
         -not [System.IO.Directory]::Exists($repositoryRoot) -or
         -not [System.IO.File]::Exists($loaderPath) -or
-        -not [System.IO.File]::Exists($cliPath)
+        -not [System.IO.File]::Exists($cliPath) -or
+        -not [System.IO.File]::Exists($commonPath)
     ) {
         throw [System.InvalidOperationException]::new("Fixed runtime boundary is unavailable.")
     }
+    . $commonPath
 
     $urlSecure = Read-Host -Prompt "UPSTASH_REDIS_REST_URL (hidden)" -AsSecureString
     if ($urlSecure.Length -eq 0) {
@@ -80,11 +87,8 @@ try {
     $urlPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($urlBstr)
     $tokenBstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($tokenSecure)
     $tokenPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenBstr)
-    if (
-        [string]::IsNullOrWhiteSpace($urlPlain) -or
-        [string]::IsNullOrWhiteSpace($tokenPlain)
-    ) {
-        throw [System.InvalidOperationException]::new("A required value is empty.")
+    if (-not (Test-FixedUpstashLauncherInput -Url $urlPlain -Token $tokenPlain)) {
+        throw [System.InvalidOperationException]::new("Fixed input boundary rejected the supplied value.")
     }
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()

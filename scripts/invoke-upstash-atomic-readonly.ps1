@@ -6,12 +6,14 @@ $ErrorActionPreference = "Stop"
 $NODE_PATH = "C:\Program Files\nodejs\node.exe"
 $PROCESS_WATCHDOG_MS = 180000
 $POST_KILL_WAIT_MS = 10000
-$CONFIRMATION_ARGUMENT = "--confirm-fixed-recovery"
+$CONFIRMATION_ARGUMENT = "--confirm-fixed-readonly"
 
 $fixedResults = @{
-    "PASS_RECOVERY_COMPLETE" = 0
-    "STOP_RECOVERY_VALUE_UNEXPECTED" = 20
-    "STOP_RECOVERY_INDETERMINATE" = 21
+    "PASS_READONLY_BOUNDARY" = 0
+    "STOP_READONLY_AUTH" = 30
+    "STOP_READONLY_TIMEOUT" = 31
+    "STOP_READONLY_TRANSPORT" = 32
+    "STOP_READONLY_INDETERMINATE" = 33
     "STOP_RUNTIME_BOUNDARY" = 13
 }
 
@@ -54,7 +56,7 @@ try {
     $cliPath = [System.IO.Path]::Combine(
         $repositoryRoot,
         "scripts",
-        "recover-upstash-atomic.mjs"
+        "probe-upstash-atomic-readonly.mjs"
     )
     $commonPath = [System.IO.Path]::Combine(
         $repositoryRoot,
@@ -111,7 +113,7 @@ try {
     $startInfo.ArgumentList.Add("--experimental-strip-types")
     $startInfo.ArgumentList.Add("--experimental-loader")
     $startInfo.ArgumentList.Add("./scripts/upstash-atomic-cli-loader.mjs")
-    $startInfo.ArgumentList.Add("./scripts/recover-upstash-atomic.mjs")
+    $startInfo.ArgumentList.Add("./scripts/probe-upstash-atomic-readonly.mjs")
     $startInfo.ArgumentList.Add($CONFIRMATION_ARGUMENT)
 
     $childProcess = [System.Diagnostics.Process]::new()
@@ -120,8 +122,8 @@ try {
         throw [System.InvalidOperationException]::new("Fixed child did not start.")
     }
     $processStarted = $true
-    $finalClassification = "STOP_RECOVERY_INDETERMINATE"
-    $finalExitCode = 21
+    $finalClassification = "STOP_READONLY_INDETERMINATE"
+    $finalExitCode = 33
 
     $stdoutTask = $childProcess.StandardOutput.ReadToEndAsync()
     $stderrTask = $childProcess.StandardError.ReadToEndAsync()
@@ -182,8 +184,8 @@ catch {
         catch {
             # Preserve the fixed indeterminate result without exposing details.
         }
-        $finalClassification = "STOP_RECOVERY_INDETERMINATE"
-        $finalExitCode = 21
+        $finalClassification = "STOP_READONLY_INDETERMINATE"
+        $finalExitCode = 33
     }
     else {
         $finalClassification = "STOP_RUNTIME_BOUNDARY"

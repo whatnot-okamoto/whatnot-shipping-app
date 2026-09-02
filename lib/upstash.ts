@@ -174,7 +174,8 @@ export function createDevelopmentAtomicVerificationRedis(): DevelopmentRedisLike
   const rawClient = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
-    retry: false,
+    // SDK 1.37.0 maps retry:false to one retry; retries:0 is one fetch total.
+    retry: { retries: 0 },
     signal: () => AbortSignal.timeout(DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS),
   });
   const namespaced = createDevelopmentRedis(new UpstashRedisAdapter(rawClient));

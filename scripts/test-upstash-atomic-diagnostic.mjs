@@ -15,7 +15,6 @@ import {
   UPSTASH_ATOMIC_DIAGNOSTIC_G1_ORDER_DIFFERENT,
   UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_KEY,
   UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_TTL_SECONDS,
-  UPSTASH_ATOMIC_DIAGNOSTIC_T1,
   UPSTASH_ATOMIC_DIAGNOSTIC_T2,
   UPSTASH_ATOMIC_DIAGNOSTIC_TARGET_KEY,
 } from "../lib/upstash-atomic-contract.ts";
@@ -326,7 +325,7 @@ assert.equal(normalFactorySource.includes("retry:"), false);
 assert.equal(normalFactorySource.includes("signal:"), false);
 assert.match(
   upstashSource,
-  /createDevelopmentAtomicVerificationRedis\(\)[\s\S]*retry: false[\s\S]*AbortSignal\.timeout\(DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS\)/
+  /createDevelopmentAtomicVerificationRedis\(\)[\s\S]*retry: \{ retries: 0 \}[\s\S]*AbortSignal\.timeout\(DEVELOPMENT_ATOMIC_REQUEST_TIMEOUT_MS\)/
 );
 assert.equal(upstashSource.includes("export class UpstashRedisAdapter"), false);
 assert.equal(upstashSource.includes("export const rawClient"), false);
@@ -373,9 +372,9 @@ function runBoundaryCli(script, confirmation) {
     BASE_DATA_MODE: "mock",
     APP_STORE_MODE: "memory",
     NODE_NO_WARNINGS: "1",
+    SystemRoot: "C:\\Windows",
+    WINDIR: "C:\\Windows",
   };
-  if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
-  if (process.env.WINDIR) env.WINDIR = process.env.WINDIR;
   return spawnSync(
     process.execPath,
     [
