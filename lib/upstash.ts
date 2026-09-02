@@ -42,7 +42,11 @@ function parseAtomicBoolean(result: unknown): boolean {
 }
 
 class UpstashRedisAdapter implements RedisLike {
-  constructor(private readonly client: Redis) {}
+  private readonly client: Redis;
+
+  constructor(client: Redis) {
+    this.client = client;
+  }
 
   get<T = unknown>(key: string): Promise<T | null> {
     return this.client.get<T>(key);
