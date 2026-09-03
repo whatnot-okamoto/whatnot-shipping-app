@@ -146,21 +146,50 @@ for (const candidate of [
 ]) {
   assert.equal(
     await runUpstashAtomicReadOnlyBoundary(candidate),
-    "STOP_RUNTIME_BOUNDARY"
+    "STOP_READONLY_BEFORE_FETCH"
   );
 }
 assert.equal(runUpstashAtomicReadOnlyBoundary.length, 1);
 
+// A valid Development boundary that fails before invoking fetch is classified
+// separately and does not cause a later Redis operation.
+{
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error(rawSentinel);
+  };
+  try {
+    const raw = new ReadOnlyRecordingRedis();
+    raw.get = async function get(key) {
+      this.calls.push(["get", key]);
+      throw new Error(rawSentinel);
+    };
+    const redis = createDevelopmentRedis(raw);
+    assert.equal(
+      await runUpstashAtomicReadOnlyBoundary(redis),
+      "STOP_READONLY_BEFORE_FETCH"
+    );
+    assert.equal(fetchCalls, 0);
+    assert.deepEqual(raw.calls, [["get", physicalGuard]]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 async function runSdkScenario(fetchImpl) {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
-  globalThis.fetch = async (...args) => {
+  const countingFetch = async (...args) => {
     fetchCalls += 1;
     return fetchImpl(...args);
   };
+  globalThis.fetch = countingFetch;
   try {
     const redis = createDevelopmentAtomicVerificationRedis();
     const classification = await runUpstashAtomicReadOnlyBoundary(redis);
+    assert.equal(globalThis.fetch, countingFetch);
     assert.equal(classification.includes(rawSentinel), false);
     return { classification, fetchCalls };
   } finally {
@@ -187,6 +216,16 @@ for (const status of [401, 403]) {
   );
   assert.deepEqual(result, {
     classification: "STOP_READONLY_AUTH",
+    fetchCalls: 1,
+  });
+}
+
+for (const status of [400, 404, 500]) {
+  const result = await runSdkScenario(async () =>
+    new Response(rawSentinel, { status })
+  );
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_HTTP",
     fetchCalls: 1,
   });
 }
@@ -222,6 +261,62 @@ for (const code of [
   });
   assert.deepEqual(result, {
     classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+// A fetch resolution that is not a native Response remains an intentionally
+// unclassified post-fetch/pre-Response residual.
+{
+  const result = await runSdkScenario(async () => ({ ok: true }));
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+// A successful HTTP Response that the real SDK cannot parse is a response
+// processing stop, not a transport or pre-response failure.
+{
+  const result = await runSdkScenario(async () =>
+    new Response(rawSentinel, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  );
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_RESPONSE_PROCESSING",
+    fetchCalls: 1,
+  });
+}
+
+
+// Body-read and decoded-result failures occur after a successful Response and
+// are independently fixed to the response-processing stop.
+for (const fetchImpl of [
+  async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error(rawSentinel));
+        },
+      }),
+      { status: 200 }
+    ),
+  async () =>
+    new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  async () =>
+    new Response(JSON.stringify([{ error: rawSentinel }]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+]) {
+  const result = await runSdkScenario(fetchImpl);
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_RESPONSE_PROCESSING",
     fetchCalls: 1,
   });
 }
@@ -286,9 +381,10 @@ for (const forbidden of [
 assert.equal(cliSource.includes("diagnose-upstash-atomic"), false);
 assert.equal(cliSource.includes("recover-upstash-atomic"), false);
 assert.equal(cliSource.includes("STOP_READONLY_WRAPPER_INDETERMINATE"), false);
+assert.equal(cliSource.includes("STOP_RUNTIME_BOUNDARY"), false);
 
-// A sanitized non-Development child stops before client construction and
-// emits only the fixed runtime classification.
+// A sanitized non-Development child starts successfully but stops before
+// fetch, emitting only the fixed child classification.
 {
   const result = spawnSync(
     process.execPath,
@@ -312,8 +408,34 @@ assert.equal(cliSource.includes("STOP_READONLY_WRAPPER_INDETERMINATE"), false);
     }
   );
   assert.equal(result.error, undefined);
-  assert.equal(result.status, 13);
-  assert.equal(result.stdout, "STOP_RUNTIME_BOUNDARY\n");
+  assert.equal(result.status, 35);
+  assert.equal(result.stdout, "STOP_READONLY_BEFORE_FETCH\n");
+  assert.equal(result.stderr, "");
+}
+
+// A directly started child with an invalid fixed confirmation argument also
+// classifies inside the child before fetch; the PowerShell launcher itself
+// never supplies this shape.
+{
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--no-warnings",
+      "--experimental-strip-types",
+      "--experimental-loader",
+      "./scripts/upstash-atomic-cli-loader.mjs",
+      "./scripts/probe-upstash-atomic-readonly.mjs",
+    ],
+    {
+      cwd: repositoryRoot,
+      env: {},
+      encoding: "utf8",
+      timeout: 10_000,
+    }
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 35);
+  assert.equal(result.stdout, "STOP_READONLY_BEFORE_FETCH\n");
   assert.equal(result.stderr, "");
 }
 

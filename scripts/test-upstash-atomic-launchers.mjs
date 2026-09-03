@@ -49,11 +49,19 @@ const readOnlyResults = new Map([
   ["STOP_READONLY_TIMEOUT", 31],
   ["STOP_READONLY_TRANSPORT", 32],
   ["STOP_READONLY_INDETERMINATE", 33],
+  ["STOP_READONLY_BEFORE_FETCH", 35],
+  ["STOP_READONLY_HTTP", 36],
+  ["STOP_READONLY_RESPONSE_PROCESSING", 37],
 ]);
 const readOnlyWrapperIndeterminate = Object.freeze({
   classification: "STOP_READONLY_WRAPPER_INDETERMINATE",
   exitCode: 34,
 });
+assert.equal(
+  new Set([...readOnlyResults.values(), readOnlyWrapperIndeterminate.exitCode, 13])
+    .size,
+  readOnlyResults.size + 2
+);
 
 const sources = {
   diagnostic: await readFile(
@@ -284,6 +292,7 @@ async function createFixtureTree(launcherName, cliName, launcherSource = null) {
   return {
     root,
     launcherPath: path.join(fixtureScripts, launcherName),
+    loaderPath: path.join(fixtureScripts, loaderName),
     cliPath: path.join(fixtureScripts, cliName),
   };
 }
@@ -704,6 +713,42 @@ setTimeout(() => {
     assertWrapperResult(result, "STOP_RECOVERY_INDETERMINATE", 21, [
       "SyntaxError",
     ]);
+  }
+
+  // If the loader/CLI fails before CLI code can emit a fixed read-only result,
+  // the already-started child is a wrapper-only indeterminate result.
+  {
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(fixture.cliPath, "this is not valid javascript {{{\n");
+    const result = runLauncher(fixture);
+    assertWrapperResult(
+      result,
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode,
+      ["SyntaxError"]
+    );
+  }
+
+  {
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName
+    );
+    await writeFile(fixture.loaderPath, "this is not valid javascript {{{\n");
+    await writeFile(
+      fixture.cliPath,
+      childSource({ stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 0 })
+    );
+    const result = runLauncher(fixture);
+    assertWrapperResult(
+      result,
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode,
+      ["SyntaxError"]
+    );
   }
 
   // Concurrent async reads prevent a full stderr pipe from deadlocking.

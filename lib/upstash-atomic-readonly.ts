@@ -11,9 +11,17 @@ export type UpstashAtomicReadOnlyClassification =
   | "STOP_READONLY_TIMEOUT"
   | "STOP_READONLY_TRANSPORT"
   | "STOP_READONLY_INDETERMINATE"
-  | "STOP_RUNTIME_BOUNDARY";
+  | "STOP_READONLY_BEFORE_FETCH"
+  | "STOP_READONLY_HTTP"
+  | "STOP_READONLY_RESPONSE_PROCESSING";
 
-type ReadOnlyFailureKind = "auth" | "timeout" | "transport";
+type ReadOnlyFailureKind = "auth" | "timeout" | "transport" | "http";
+type ReadOnlyProgress =
+  | "RUNNER_STARTED"
+  | "FETCH_STARTED"
+  | "RESPONSE_RECEIVED"
+  | "RESPONSE_OK"
+  | "GET_COMPLETED";
 
 class FixedReadOnlyFailure extends Error {
   readonly kind: ReadOnlyFailureKind;
@@ -102,24 +110,35 @@ function classificationForFailure(
   }
   if (error.kind === "auth") return "STOP_READONLY_AUTH";
   if (error.kind === "timeout") return "STOP_READONLY_TIMEOUT";
-  return "STOP_READONLY_TRANSPORT";
+  if (error.kind === "transport") return "STOP_READONLY_TRANSPORT";
+  return "STOP_READONLY_HTTP";
 }
 
 export async function runUpstashAtomicReadOnlyBoundary(
   candidate: RedisLike
 ): Promise<UpstashAtomicReadOnlyClassification> {
+  const observation: { progress: ReadOnlyProgress } = {
+    progress: "RUNNER_STARTED",
+  };
   const redis = requireDevelopmentRedis(candidate);
   if (!redis || typeof globalThis.fetch !== "function") {
-    return "STOP_RUNTIME_BOUNDARY";
+    return "STOP_READONLY_BEFORE_FETCH";
   }
 
   const originalFetch = globalThis.fetch;
   const fixedFetch: typeof fetch = async (input, init) => {
+    observation.progress = "FETCH_STARTED";
     try {
       const response = await originalFetch(input, init);
+      if (!(response instanceof Response)) throw new Error();
+      observation.progress = "RESPONSE_RECEIVED";
       if (response.status === 401 || response.status === 403) {
         throw new FixedReadOnlyFailure("auth");
       }
+      if (!response.ok) {
+        throw new FixedReadOnlyFailure("http");
+      }
+      observation.progress = "RESPONSE_OK";
       return response;
     } catch (error) {
       if (error instanceof FixedReadOnlyFailure) throw error;
@@ -139,15 +158,41 @@ export async function runUpstashAtomicReadOnlyBoundary(
   try {
     globalThis.fetch = fixedFetch;
   } catch {
-    return "STOP_RUNTIME_BOUNDARY";
+    return "STOP_READONLY_BEFORE_FETCH";
   }
 
+  let classification: UpstashAtomicReadOnlyClassification;
   try {
-    await redis.get<unknown>(UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_KEY);
-    return "PASS_READONLY_BOUNDARY";
-  } catch (error) {
-    return classificationForFailure(error);
+    try {
+      await redis.get<unknown>(UPSTASH_ATOMIC_DIAGNOSTIC_GUARD_KEY);
+      observation.progress = "GET_COMPLETED";
+      classification = "PASS_READONLY_BOUNDARY";
+    } catch (error) {
+      if (error instanceof FixedReadOnlyFailure) {
+        classification = classificationForFailure(error);
+      } else if (observation.progress === "RUNNER_STARTED") {
+        classification = "STOP_READONLY_BEFORE_FETCH";
+      } else if (observation.progress === "RESPONSE_OK") {
+        classification = "STOP_READONLY_RESPONSE_PROCESSING";
+      } else {
+        // This also covers the structural residual where fetch resolved
+        // without a native Response. No raw detail leaves this process.
+        classification = "STOP_READONLY_INDETERMINATE";
+      }
+    }
   } finally {
-    globalThis.fetch = originalFetch;
+    try {
+      globalThis.fetch = originalFetch;
+    } catch {
+      if (observation.progress === "RUNNER_STARTED") {
+        classification = "STOP_READONLY_BEFORE_FETCH";
+      } else if (observation.progress === "RESPONSE_OK") {
+        classification = "STOP_READONLY_RESPONSE_PROCESSING";
+      } else {
+        classification = "STOP_READONLY_INDETERMINATE";
+      }
+    }
   }
+
+  return classification;
 }

@@ -244,7 +244,7 @@ assert.equal(nodeVersion.stdout.trim(), "v22.14.0");
 try {
   for (const [scenario, classification, exitCode] of [
     ["success", "PASS_READONLY_BOUNDARY", 0],
-    ["unknown", "STOP_READONLY_INDETERMINATE", 33],
+    ["unknown", "STOP_READONLY_BEFORE_FETCH", 35],
   ]) {
     const { result, audit } = await runScenario(scenario);
     assert.equal(result.error, undefined);
