@@ -285,6 +285,7 @@ for (const forbidden of [
 }
 assert.equal(cliSource.includes("diagnose-upstash-atomic"), false);
 assert.equal(cliSource.includes("recover-upstash-atomic"), false);
+assert.equal(cliSource.includes("STOP_READONLY_WRAPPER_INDETERMINATE"), false);
 
 // A sanitized non-Development child stops before client construction and
 // emits only the fixed runtime classification.

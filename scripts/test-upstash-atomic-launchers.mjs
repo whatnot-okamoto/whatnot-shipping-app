@@ -49,8 +49,11 @@ const readOnlyResults = new Map([
   ["STOP_READONLY_TIMEOUT", 31],
   ["STOP_READONLY_TRANSPORT", 32],
   ["STOP_READONLY_INDETERMINATE", 33],
-  ["STOP_RUNTIME_BOUNDARY", 13],
 ]);
+const readOnlyWrapperIndeterminate = Object.freeze({
+  classification: "STOP_READONLY_WRAPPER_INDETERMINATE",
+  exitCode: 34,
+});
 
 const sources = {
   diagnostic: await readFile(
@@ -182,6 +185,33 @@ assert.equal(sources.readOnly.includes(diagnosticCliName), false);
 assert.equal(sources.readOnly.includes(recoveryCliName), false);
 assert.equal(sources.readOnly.includes("--confirm-fixed-diagnostic"), false);
 assert.equal(sources.readOnly.includes("--confirm-fixed-recovery"), false);
+assert.ok(
+  sources.readOnly.includes(readOnlyWrapperIndeterminate.classification)
+);
+assert.ok(
+  sources.readOnly.includes(String(readOnlyWrapperIndeterminate.exitCode))
+);
+const readOnlyFixedChildResultsBlock = sources.readOnly.slice(
+  sources.readOnly.indexOf("$fixedResults = @{"),
+  sources.readOnly.indexOf("}", sources.readOnly.indexOf("$fixedResults = @{"))
+);
+assert.equal(
+  readOnlyFixedChildResultsBlock.includes(
+    readOnlyWrapperIndeterminate.classification
+  ),
+  false
+);
+assert.equal(
+  readOnlyFixedChildResultsBlock.includes("STOP_RUNTIME_BOUNDARY"),
+  false
+);
+assert.equal(
+  readOnlyResults.has(readOnlyWrapperIndeterminate.classification),
+  false
+);
+assert.equal(readOnlyResults.has("STOP_RUNTIME_BOUNDARY"), false);
+assert.match(sources.readOnly, /\$finalClassification = "STOP_RUNTIME_BOUNDARY"/);
+assert.match(sources.readOnly, /\$finalExitCode = 13/);
 
 for (const [classification, exitCode] of diagnosticResults) {
   assert.ok(sources.diagnostic.includes(`"${classification}" = ${exitCode}`));
@@ -545,13 +575,17 @@ try {
     );
     assertWrapperResult(
       runLauncher(wrapperFixture),
-      "STOP_READONLY_INDETERMINATE",
-      33
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode
     );
   }
 
   for (const scenario of [
     { stdout: `${rawSentinel}\n`, exitCode: 0 },
+    { stdout: "PASS_READONLY_BOUNDARY\r\n", exitCode: 0 },
+    { stdout: "PASS_READONLY_BOUNDARY", exitCode: 0 },
+    { stdout: "UNKNOWN_READONLY_RESULT\n", exitCode: 0 },
+    { stdout: "STOP_RUNTIME_BOUNDARY\n", exitCode: 13 },
     { stdout: "PASS_READONLY_BOUNDARY\nEXTRA\n", exitCode: 0 },
     { stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 32 },
   ]) {
@@ -562,8 +596,73 @@ try {
     await writeFile(fixture.cliPath, childSource(scenario));
     assertWrapperResult(
       runLauncher(fixture),
-      "STOP_READONLY_INDETERMINATE",
-      33
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode
+    );
+  }
+
+  // A post-start stream-read failure is a wrapper-only indeterminate result.
+  {
+    const streamFailure = sources.readOnly.replace(
+      "$capturedStdout = $stdoutTask.GetAwaiter().GetResult()",
+      'throw [System.IO.IOException]::new("fixed stream fixture failure")'
+    );
+    assert.notEqual(streamFailure, sources.readOnly);
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName,
+      streamFailure
+    );
+    await writeFile(
+      fixture.cliPath,
+      childSource({ stdout: "PASS_READONLY_BOUNDARY\n", exitCode: 0 })
+    );
+    assertWrapperResult(
+      runLauncher(fixture),
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode
+    );
+  }
+
+  // A watchdog whose child termination cannot be confirmed is wrapper-only.
+  {
+    const terminationFailure = sources.readOnly
+      .replace("$PROCESS_WATCHDOG_MS = 180000", "$PROCESS_WATCHDOG_MS = 250")
+      .replace(
+        "$childExitConfirmed = $childProcess.WaitForExit($POST_KILL_WAIT_MS)",
+        "$childExitConfirmed = $false"
+      );
+    assert.notEqual(terminationFailure, sources.readOnly);
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName,
+      terminationFailure
+    );
+    await writeFile(fixture.cliPath, "setInterval(() => {}, 1000);\n");
+    assertWrapperResult(
+      runLauncher(fixture, { timeout: 5_000 }),
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode
+    );
+  }
+
+  // An ordinary read-only watchdog expiry is also wrapper-only.
+  {
+    const shortened = sources.readOnly.replace(
+      "$PROCESS_WATCHDOG_MS = 180000",
+      "$PROCESS_WATCHDOG_MS = 250"
+    );
+    assert.notEqual(shortened, sources.readOnly);
+    const fixture = await createFixtureTree(
+      readOnlyLauncherName,
+      readOnlyCliName,
+      shortened
+    );
+    await writeFile(fixture.cliPath, "setInterval(() => {}, 1000);\n");
+    assertWrapperResult(
+      runLauncher(fixture, { timeout: 5_000 }),
+      readOnlyWrapperIndeterminate.classification,
+      readOnlyWrapperIndeterminate.exitCode
     );
   }
 

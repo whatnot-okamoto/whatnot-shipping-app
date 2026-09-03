@@ -14,8 +14,9 @@ $fixedResults = @{
     "STOP_READONLY_TIMEOUT" = 31
     "STOP_READONLY_TRANSPORT" = 32
     "STOP_READONLY_INDETERMINATE" = 33
-    "STOP_RUNTIME_BOUNDARY" = 13
 }
+$WRAPPER_INDETERMINATE_CLASSIFICATION = "STOP_READONLY_WRAPPER_INDETERMINATE"
+$WRAPPER_INDETERMINATE_EXIT_CODE = 34
 
 $finalClassification = "STOP_RUNTIME_BOUNDARY"
 $finalExitCode = 13
@@ -122,8 +123,8 @@ try {
         throw [System.InvalidOperationException]::new("Fixed child did not start.")
     }
     $processStarted = $true
-    $finalClassification = "STOP_READONLY_INDETERMINATE"
-    $finalExitCode = 33
+    $finalClassification = $WRAPPER_INDETERMINATE_CLASSIFICATION
+    $finalExitCode = $WRAPPER_INDETERMINATE_EXIT_CODE
 
     $stdoutTask = $childProcess.StandardOutput.ReadToEndAsync()
     $stderrTask = $childProcess.StandardError.ReadToEndAsync()
@@ -184,8 +185,8 @@ catch {
         catch {
             # Preserve the fixed indeterminate result without exposing details.
         }
-        $finalClassification = "STOP_READONLY_INDETERMINATE"
-        $finalExitCode = 33
+        $finalClassification = $WRAPPER_INDETERMINATE_CLASSIFICATION
+        $finalExitCode = $WRAPPER_INDETERMINATE_EXIT_CODE
     }
     else {
         $finalClassification = "STOP_RUNTIME_BOUNDARY"
