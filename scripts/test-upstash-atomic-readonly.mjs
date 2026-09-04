@@ -43,6 +43,12 @@ function structuredTransportError(code = "ECONNREFUSED") {
   return new TypeError(rawSentinel, { cause: { code } });
 }
 
+function errorWithOwnCode(code) {
+  const error = new Error(rawSentinel);
+  Object.defineProperty(error, "code", { value: code, configurable: true });
+  return error;
+}
+
 async function countFetches(retry) {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
@@ -255,6 +261,240 @@ for (const code of [
   });
 }
 
+// A source-confirmed request-construction code is a local request stop after
+// the JavaScript fetch invocation, not a transport failure.
+{
+  const result = await runSdkScenario(async () => {
+    throw structuredTransportError("ERR_INVALID_URL");
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_LOCAL_REQUEST",
+    fetchCalls: 1,
+  });
+}
+
+// The fixed extractor covers direct, cause, bounded aggregate, and nested
+// cause own-data-property layouts without changing the public request count.
+for (const error of [
+  errorWithOwnCode("ETIMEDOUT"),
+  new TypeError(rawSentinel, {
+    cause: new AggregateError([errorWithOwnCode("ETIMEDOUT")]),
+  }),
+]) {
+  const result = await runSdkScenario(async () => {
+    throw error;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_TIMEOUT",
+    fetchCalls: 1,
+  });
+}
+
+{
+  const result = await runSdkScenario(async () => {
+    throw new TypeError(rawSentinel, {
+      cause: new Error(rawSentinel, {
+        cause: errorWithOwnCode("ENOTFOUND"),
+      }),
+    });
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_TRANSPORT",
+    fetchCalls: 1,
+  });
+}
+
+// NodeAggregateError exposes the first code directly and retains the standard
+// AggregateError errors array. The equivalent public shape stays stable when
+// every observed code belongs to one known family.
+{
+  const aggregate = new AggregateError([
+    errorWithOwnCode("ETIMEDOUT"),
+    errorWithOwnCode("UND_ERR_CONNECT_TIMEOUT"),
+  ]);
+  Object.defineProperty(aggregate, "code", { value: "ETIMEDOUT" });
+  const result = await runSdkScenario(async () => {
+    throw new TypeError(rawSentinel, { cause: aggregate });
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_TIMEOUT",
+    fetchCalls: 1,
+  });
+}
+
+for (const code of [
+  "ERR_INVALID_URL",
+  "ERR_INVALID_URL_SCHEME",
+  "ERR_INVALID_ARG_TYPE",
+  "ERR_INVALID_THIS",
+  "UND_ERR_INVALID_ARG",
+  "UND_ERR_INVALID_RETURN_VALUE",
+  "UND_ERR_NOT_SUPPORTED",
+  "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH",
+]) {
+  const result = await runSdkScenario(async () => {
+    throw new TypeError(rawSentinel, { cause: errorWithOwnCode(code) });
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_LOCAL_REQUEST",
+    fetchCalls: 1,
+  });
+  assert.equal(result.classification.includes(code), false);
+}
+
+for (const error of [
+  new TypeError(rawSentinel, {
+    cause: new AggregateError([
+      errorWithOwnCode("ETIMEDOUT"),
+      errorWithOwnCode("ENOTFOUND"),
+      errorWithOwnCode("ERR_INVALID_URL"),
+    ]),
+  }),
+  new TypeError(rawSentinel, {
+    cause: new AggregateError([
+      errorWithOwnCode("ETIMEDOUT"),
+      errorWithOwnCode("FIXED_UNKNOWN_CODE"),
+    ]),
+  }),
+  new TypeError(rawSentinel, {
+    cause: errorWithOwnCode("FIXED_UNKNOWN_CODE"),
+  }),
+  new TypeError(rawSentinel, {
+    cause: errorWithOwnCode("ERR_TLS_NOT_SOURCE_CONFIRMED"),
+  }),
+  new Error(rawSentinel),
+]) {
+  const result = await runSdkScenario(async () => {
+    throw error;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+  assert.equal(result.classification.includes("FIXED_UNKNOWN_CODE"), false);
+}
+
+// Accessor descriptors are never invoked. Their presence makes the bounded
+// structural result indeterminate even when another known code is present.
+for (const property of ["code", "cause", "errors"]) {
+  let getterCalls = 0;
+  const error = errorWithOwnCode("ETIMEDOUT");
+  Object.defineProperty(error, property, {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error(rawSentinel);
+    },
+  });
+  const result = await runSdkScenario(async () => {
+    throw error;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+  assert.equal(getterCalls, 0);
+}
+
+{
+  let indexGetterCalls = 0;
+  const members = [];
+  Object.defineProperty(members, "0", {
+    get() {
+      indexGetterCalls += 1;
+      throw new Error(rawSentinel);
+    },
+  });
+  Object.defineProperty(members, "length", { value: 1 });
+  const error = new Error(rawSentinel);
+  Object.defineProperty(error, "errors", { value: members });
+  const result = await runSdkScenario(async () => {
+    throw error;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+  assert.equal(indexGetterCalls, 0);
+}
+
+// Descriptor failure, cycles, and every fixed traversal limit fail closed.
+{
+  const descriptorFailure = new Proxy(
+    {},
+    {
+      getOwnPropertyDescriptor() {
+        throw new Error(rawSentinel);
+      },
+    }
+  );
+  const result = await runSdkScenario(async () => {
+    throw descriptorFailure;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+{
+  const cyclic = errorWithOwnCode("ETIMEDOUT");
+  Object.defineProperty(cyclic, "cause", { value: cyclic });
+  const result = await runSdkScenario(async () => {
+    throw cyclic;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+{
+  let tooDeep = errorWithOwnCode("ETIMEDOUT");
+  for (let index = 0; index < 5; index += 1) {
+    tooDeep = new Error(rawSentinel, { cause: tooDeep });
+  }
+  const result = await runSdkScenario(async () => {
+    throw tooDeep;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+{
+  const tooManyAggregateMembers = new AggregateError(
+    Array.from({ length: 9 }, () => errorWithOwnCode("ETIMEDOUT"))
+  );
+  const result = await runSdkScenario(async () => {
+    throw tooManyAggregateMembers;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
+{
+  const tooManyObjects = new AggregateError(
+    Array.from(
+      { length: 8 },
+      () =>
+        new AggregateError(
+          Array.from({ length: 4 }, () => errorWithOwnCode("ETIMEDOUT"))
+        )
+    )
+  );
+  const result = await runSdkScenario(async () => {
+    throw tooManyObjects;
+  });
+  assert.deepEqual(result, {
+    classification: "STOP_READONLY_INDETERMINATE",
+    fetchCalls: 1,
+  });
+}
+
 {
   const result = await runSdkScenario(async () => {
     throw new Error(rawSentinel);
@@ -374,10 +614,19 @@ for (const forbidden of [
   "auth:base_token",
   "process.stderr",
   ".message",
+  "error.cause",
+  "error.code",
+  "error.errors",
 ]) {
   assert.equal(readOnlySource.includes(forbidden), false);
   assert.equal(cliSource.includes(forbidden), false);
 }
+assert.ok(readOnlySource.includes("Object.getOwnPropertyDescriptor"));
+assert.ok(readOnlySource.includes("MAX_ERROR_TRAVERSAL_DEPTH = 3"));
+assert.ok(readOnlySource.includes("MAX_AGGREGATE_ERROR_COUNT = 8"));
+assert.ok(readOnlySource.includes("MAX_INSPECTED_ERROR_OBJECTS = 32"));
+assert.equal(readOnlySource.includes("STOP_READONLY_STRUCTURED_UNKNOWN"), false);
+assert.equal(cliSource.includes("STOP_READONLY_STRUCTURED_UNKNOWN"), false);
 assert.equal(cliSource.includes("diagnose-upstash-atomic"), false);
 assert.equal(cliSource.includes("recover-upstash-atomic"), false);
 assert.equal(cliSource.includes("STOP_READONLY_WRAPPER_INDETERMINATE"), false);

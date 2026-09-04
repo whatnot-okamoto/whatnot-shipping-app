@@ -52,6 +52,7 @@ const readOnlyResults = new Map([
   ["STOP_READONLY_BEFORE_FETCH", 35],
   ["STOP_READONLY_HTTP", 36],
   ["STOP_READONLY_RESPONSE_PROCESSING", 37],
+  ["STOP_READONLY_LOCAL_REQUEST", 39],
 ]);
 const readOnlyWrapperIndeterminate = Object.freeze({
   classification: "STOP_READONLY_WRAPPER_INDETERMINATE",
