@@ -17,12 +17,6 @@ const CONTENT_WIDTH = A4_WIDTH - MARGIN * 2;
 const RIGHT_EDGE = MARGIN + CONTENT_WIDTH;
 const FOOTER_RESERVE = 24; // ページ番号描画用のフッター予約領域（pt）
 
-const CARRIER_LABELS: Record<string, string> = {
-  sagawa: "佐川急便",
-  yamato: "ヤマト運輸",
-  nekopos: "ネコポス",
-};
-
 // ============================================================================
 // 型定義
 // ============================================================================

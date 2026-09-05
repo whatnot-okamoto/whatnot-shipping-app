@@ -6,7 +6,6 @@ import {
   assertLoopbackPortAvailable,
   createMockEnvironment,
   installTtyEtxHandler,
-  isLoopbackPortListening,
   startOwnedProcess,
   waitForLoopbackPort,
 } from "./mock-dev-runner.mjs";

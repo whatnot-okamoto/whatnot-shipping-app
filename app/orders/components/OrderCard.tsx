@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import OrderStatusBadge from "./OrderStatusBadge";
 import BundleGroupIndicator from "./BundleGroupIndicator";
 
@@ -41,7 +41,21 @@ type Props = {
   onCarrierError: (hasError: boolean) => void;
 };
 
-export default function OrderCard({ order, checked, onCheck, onRefresh, onCarrierError }: Props) {
+export default function OrderCard(props: Props) {
+  const { order } = props;
+  const editableStateKey = JSON.stringify([
+    order.carrier,
+    order.receipt_required,
+    order.receipt_name,
+    order.receipt_note,
+    order.hold_flag,
+    order.hold_reason,
+  ]);
+
+  return <OrderCardForm key={editableStateKey} {...props} />;
+}
+
+function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: Props) {
   const bundleIdShort = order.bundle_group_id
     ? order.bundle_group_id.slice(0, 11) + "..."
     : "—";
@@ -57,20 +71,6 @@ export default function OrderCard({ order, checked, onCheck, onRefresh, onCarrie
   const [holdReason, setHoldReason] = useState(order.hold_reason);
   const [isSaving, setIsSaving] = useState(false);
   const [patchError, setPatchError] = useState<string | null>(null);
-
-  // order.carrier が更新されたら localCarrier をサーバー値に同期する
-  useEffect(() => {
-    setLocalCarrier(order.carrier);
-  }, [order.carrier]);
-
-  // order が更新されたらローカル状態をサーバー値に同期する
-  useEffect(() => {
-    setLocalReceiptRequired(order.receipt_required);
-    setReceiptName(order.receipt_name);
-    setReceiptNote(order.receipt_note);
-    setHoldReason(order.hold_reason);
-    setPatchError(null);
-  }, [order]);
 
   // 共通PATCHヘルパー
   const patch = async (url: string, body: Record<string, unknown>): Promise<void> => {

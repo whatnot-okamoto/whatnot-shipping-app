@@ -222,10 +222,7 @@ function buildCsvBuffer(header: string[], rows: string[][]): Buffer {
  * 複数商品: 先頭U1の先頭アイテムのtitle + " 他"。
  * 文字数超過時もCSV出力を継続する（e飛伝III側に委ねる）。
  */
-function buildSagawaProductName(
-  orders: BaseOrder[],
-  bundleGroupId: string
-): string {
+function buildSagawaProductName(orders: BaseOrder[]): string {
   const allItems = orders.flatMap((o) => o.order_items);
   const isSingle = allItems.length === 1 && allItems[0].amount === 1;
 
@@ -486,7 +483,7 @@ function buildSagawaRow(unit: CsvInputUnit): string[] {
   }
 
   // col25: 品名（品名生成ルール）
-  const col25 = buildSagawaProductName(orders, bundleGroupId);
+  const col25 = buildSagawaProductName(orders);
 
   // 74列の行を構築
   const row = new Array<string>(74).fill("");

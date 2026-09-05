@@ -24,6 +24,10 @@ const CARRIER_LABELS: Record<CsvCarrier, string> = {
 
 const CARRIER_ORDER: CsvCarrier[] = ["nekopos", "sagawa", "yamato"];
 
+function createFallbackFilename(carrier: CsvCarrier): string {
+  return `${carrier}_${Date.now()}.csv`;
+}
+
 function StatusBadge({ status }: { status: CsvStatus }) {
   if (status === "done") {
     return (
@@ -100,7 +104,7 @@ export default function CsvOutputSection({
           const filenameMatch = disposition.match(/filename="([^"]+)"/);
           const filename = filenameMatch
             ? filenameMatch[1]
-            : `${carrier}_${Date.now()}.csv`;
+            : createFallbackFilename(carrier);
 
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
