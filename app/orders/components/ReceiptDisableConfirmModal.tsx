@@ -37,6 +37,10 @@ export default function ReceiptDisableConfirmModal({
     return () => trigger?.focus();
   }, [triggerRef]);
 
+  useEffect(() => {
+    if (isSaving) dialogRef.current?.focus();
+  }, [isSaving]);
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       if (!isSaving) {
@@ -65,7 +69,13 @@ export default function ReceiptDisableConfirmModal({
     const lastElement = focusableElements[focusableElements.length - 1];
     const activeElement = document.activeElement;
 
-    if (event.shiftKey && (activeElement === firstElement || !dialog.contains(activeElement))) {
+    if (activeElement === dialog) {
+      event.preventDefault();
+      (event.shiftKey ? lastElement : firstElement).focus();
+    } else if (
+      event.shiftKey &&
+      (activeElement === firstElement || !dialog.contains(activeElement))
+    ) {
       event.preventDefault();
       lastElement.focus();
     } else if (!event.shiftKey && activeElement === lastElement) {
