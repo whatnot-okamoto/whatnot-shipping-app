@@ -4,7 +4,7 @@ export type OrderListSortItem = {
 };
 
 export function isValidOrderedTimestamp(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 /**

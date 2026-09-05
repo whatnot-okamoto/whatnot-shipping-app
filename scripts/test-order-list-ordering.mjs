@@ -30,6 +30,11 @@ assert.equal(resolveOrderedTimestamp(200, legacySnapshot.ordered_timestamp), 200
 assert.equal(resolveOrderedTimestamp(undefined, 150), 150);
 assert.equal(resolveOrderedTimestamp(undefined, undefined), 0);
 assert.equal(resolveOrderedTimestamp(201, 999), 201, "BASE ordered must win");
+assert.equal(
+  resolveOrderedTimestamp(0, 150),
+  150,
+  "zero BASE ordered must fall back to the valid snapshot timestamp"
+);
 assert.equal(resolveOrderedTimestamp(-1, undefined), 0);
 assert.equal(resolveOrderedTimestamp(1.5, undefined), 0);
 
@@ -70,6 +75,14 @@ assert.equal(shouldPromotePendingSnapshot(repairedSnapshot, correctedTimestamp),
 
 // pendingに正確な時刻がない場合、時刻だけを理由に既存snapshotを壊さない。
 assert.equal(needsOrderedTimestampRepair(repairedSnapshot, legacySnapshot), false);
+assert.equal(
+  needsOrderedTimestampRepair(repairedSnapshot, {
+    ...legacySnapshot,
+    ordered_timestamp: 0,
+  }),
+  false,
+  "zero pending timestamp must not overwrite the existing snapshot"
+);
 assert.equal(
   needsOrderedTimestampRepair(repairedSnapshot, {
     ...legacySnapshot,
