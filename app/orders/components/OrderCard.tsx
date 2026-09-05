@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import OrderStatusBadge from "./OrderStatusBadge";
 import BundleGroupIndicator from "./BundleGroupIndicator";
+import ReceiptDisableConfirmModal from "./ReceiptDisableConfirmModal";
 
 export type Order = {
   unique_key: string;
@@ -71,6 +72,10 @@ function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: P
   const [holdReason, setHoldReason] = useState(order.hold_reason);
   const [isSaving, setIsSaving] = useState(false);
   const [patchError, setPatchError] = useState<string | null>(null);
+  const [isReceiptDisableConfirmOpen, setIsReceiptDisableConfirmOpen] = useState(false);
+  const [receiptDisableError, setReceiptDisableError] = useState<string | null>(null);
+  const receiptCheckboxRef = useRef<HTMLInputElement>(null);
+  const receiptDisableInFlightRef = useRef(false);
 
   // 共通PATCHヘルパー
   const patch = async (url: string, body: Record<string, unknown>): Promise<void> => {
@@ -117,21 +122,60 @@ function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: P
     }
   };
 
+  const saveReceiptDisabled = async (errorTarget: "dialog" | "card") => {
+    if (receiptDisableInFlightRef.current) return;
+    receiptDisableInFlightRef.current = true;
+    setIsSaving(true);
+    if (errorTarget === "dialog") setReceiptDisableError(null);
+    else setPatchError(null);
+
+    try {
+      await patch("/api/orders/receipt", {
+        unique_key: order.unique_key,
+        receipt_required: false,
+        receipt_name: "",
+        receipt_note: "",
+      });
+      setLocalReceiptRequired(false);
+      setReceiptName("");
+      setReceiptNote("");
+      setIsReceiptDisableConfirmOpen(false);
+      setReceiptDisableError(null);
+      onRefresh();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "更新に失敗しました";
+      if (errorTarget === "dialog") setReceiptDisableError(message);
+      else setPatchError(message);
+    } finally {
+      receiptDisableInFlightRef.current = false;
+      setIsSaving(false);
+    }
+  };
+
   // 領収書チェックボックス onChange
   const handleReceiptCheckbox = (checked: boolean) => {
-    setLocalReceiptRequired(checked);
-    if (!checked) {
-      // 未選択に戻す場合は即時保存
-      withSave(() =>
-        patch("/api/orders/receipt", {
-          unique_key: order.unique_key,
-          receipt_required: false,
-          receipt_name: "",
-          receipt_note: "",
-        })
-      );
+    if (checked) {
+      setLocalReceiptRequired(true);
+      return;
     }
-    // trueに変えた場合は入力欄を展開するだけ（保存ボタン押下まで待つ）
+
+    const hasEnteredReceiptText =
+      receiptName.trim().length >= 1 || receiptNote.trim().length >= 1;
+
+    if (hasEnteredReceiptText) {
+      setPatchError(null);
+      setReceiptDisableError(null);
+      setIsReceiptDisableConfirmOpen(true);
+      return;
+    }
+
+    void saveReceiptDisabled("card");
+  };
+
+  const handleReceiptDisableCancel = () => {
+    if (isSaving) return;
+    setReceiptDisableError(null);
+    setIsReceiptDisableConfirmOpen(false);
   };
 
   // 領収書 保存ボタン
@@ -262,6 +306,7 @@ function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: P
           <div>
             <div className="flex items-center gap-1.5">
               <input
+                ref={receiptCheckboxRef}
                 type="checkbox"
                 id={`receipt-${order.unique_key}`}
                 checked={localReceiptRequired}
@@ -368,6 +413,18 @@ function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: P
             {bundleIdShort}
           </span>
         </div>
+
+        {isReceiptDisableConfirmOpen && (
+          <ReceiptDisableConfirmModal
+            isSaving={isSaving}
+            error={receiptDisableError}
+            triggerRef={receiptCheckboxRef}
+            onConfirm={() => {
+              void saveReceiptDisabled("dialog");
+            }}
+            onCancel={handleReceiptDisableCancel}
+          />
+        )}
       </div>
     </div>
   );
