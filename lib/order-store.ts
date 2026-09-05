@@ -32,6 +32,7 @@ export type OrderSnapshot = {
   bundle_group_id: string;
   receiver_name: string;
   order_date: string;          // YYYY-MM-DD
+  ordered_timestamp?: number;  // Unix秒。旧snapshotは未保持のため移行期間中はoptional
   shipping_method_name: string;
   shipping_fee: number;
   shipping_lines_count: number;
@@ -266,6 +267,7 @@ function buildOrderSnapshot(
     bundle_group_id: bundleGroupId,
     receiver_name: getReceiverName(order),
     order_date: new Date(order.ordered * 1000).toISOString().slice(0, 10),
+    ordered_timestamp: order.ordered,
     shipping_method_name: shippingMethodName,
     shipping_fee: shippingFee,
     shipping_lines_count: linesCount,

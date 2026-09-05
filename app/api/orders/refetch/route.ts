@@ -13,6 +13,7 @@ import {
 } from "@/lib/order-store";
 import { resetRefetchState, setRefetchState } from "@/lib/refetch-store";
 import { requireAuth } from "@/lib/auth";
+import { getStaffReviewSnapshotChanges } from "@/lib/order-snapshot-diff";
 
 export type DiffItem = {
   unique_key: string;
@@ -27,13 +28,8 @@ function comparePendingToSnapshot(
   existing: OrderSnapshot,
   pending: OrderSnapshot
 ): DiffItem | null {
-  const itemChanged =
-    existing.item_count !== pending.item_count ||
-    existing.items_summary !== pending.items_summary;
-  const feeChanged = existing.shipping_fee !== pending.shipping_fee;
-  const shippingChanged =
-    existing.shipping_method_name !== pending.shipping_method_name ||
-    existing.shipping_lines_count !== pending.shipping_lines_count;
+  const { itemChanged, feeChanged, shippingChanged } =
+    getStaffReviewSnapshotChanges(existing, pending);
 
   if (!itemChanged && !feeChanged && !shippingChanged) return null;
 

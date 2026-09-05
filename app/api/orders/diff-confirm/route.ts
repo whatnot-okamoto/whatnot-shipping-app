@@ -8,22 +8,11 @@ import {
   getOrderSnapshot,
   deleteOrderSnapshotPending,
   getAllPendingUniqueKeys,
-  type OrderSnapshot,
 } from "@/lib/order-store";
 import { getRefetchState, setRefetchState } from "@/lib/refetch-store";
 import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
-
-/** 5フィールドを比較して差分があるか判定する（refetch側と同じ基準） */
-function hasDiff(existing: OrderSnapshot, pending: OrderSnapshot): boolean {
-  return (
-    existing.shipping_fee !== pending.shipping_fee ||
-    existing.shipping_method_name !== pending.shipping_method_name ||
-    existing.shipping_lines_count !== pending.shipping_lines_count ||
-    existing.item_count !== pending.item_count ||
-    existing.items_summary !== pending.items_summary
-  );
-}
+import { shouldPromotePendingSnapshot } from "@/lib/order-snapshot-diff";
 
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
@@ -53,7 +42,8 @@ export async function POST(req: Request) {
     // 手順2: pending対象unique_key全件取得
     const pendingKeys = await getAllPendingUniqueKeys();
 
-    // 手順3: 差分ありpendingはsnapshotへ昇格、差分なしpendingは削除のみ
+    // 手順3: 業務差分あり、またはordered_timestamp補完対象のpendingをsnapshotへ昇格
+    // 時刻補完はスタッフ向け差分には追加せず、差分確認完了後の安全なschema補完として扱う。
     for (const uniqueKey of pendingKeys) {
       const [existing, pending] = await Promise.all([
         getOrderSnapshot(uniqueKey),
@@ -66,12 +56,12 @@ export async function POST(req: Request) {
         continue;
       }
 
-      if (existing && hasDiff(existing, pending)) {
-        // 差分あり → order_snapshot:{unique_key} に昇格（上書き）
+      if (existing && shouldPromotePendingSnapshot(existing, pending)) {
+        // 業務差分あり、または時刻補完対象 → order_snapshot:{unique_key} に昇格（上書き）
         // Section 0: 差分確認完了後のみ order_snapshot を上書き可
         await redis.set(`order_snapshot:${uniqueKey}`, JSON.stringify(pending));
       }
-      // 差分なし・またはexisting未存在 → snapshotは変更しない
+      // 昇格対象外・またはexisting未存在 → snapshotは変更しない
 
       await deleteOrderSnapshotPending(uniqueKey);
     }

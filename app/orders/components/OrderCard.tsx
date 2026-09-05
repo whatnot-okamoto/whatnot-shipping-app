@@ -7,6 +7,7 @@ import ReceiptDisableConfirmModal from "./ReceiptDisableConfirmModal";
 
 export type Order = {
   unique_key: string;
+  ordered_timestamp: number;
   receiver_name: string;
   order_date: string;
   shipping_method_name: string;

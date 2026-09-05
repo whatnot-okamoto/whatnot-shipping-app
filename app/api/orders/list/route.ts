@@ -18,6 +18,11 @@ import { fetchOrderedOrders } from "@/lib/base-api";
 import { getRefetchState } from "@/lib/refetch-store";
 import { requireAuth } from "@/lib/auth";
 import { BaseReadonlyReauthorizationRequiredError } from "@/lib/base-readonly-oauth";
+import type { BaseOrderSummary } from "@/lib/base-api";
+import {
+  compareOrdersNewestFirst,
+  resolveOrderedTimestamp,
+} from "@/lib/order-list-ordering";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -54,6 +59,7 @@ export async function GET(req: Request) {
     // ステップ1: BASE一覧APIで現在の未対応注文 unique_key 一覧を取得
     // 失敗時は index:orders のみで継続しない
     let baseOpenUniqueKeys: Set<string>;
+    let baseOpenOrdersByKey: Map<string, BaseOrderSummary>;
     let baseRawOrderCount: number;
     let baseOpenOrderCount: number;
     try {
@@ -66,7 +72,10 @@ export async function GET(req: Request) {
           o.dispatched === null &&
           o.terminated === false
       );
-      baseOpenUniqueKeys = new Set(baseOpenOrders.map((o) => o.unique_key));
+      baseOpenOrdersByKey = new Map(
+        baseOpenOrders.map((order) => [order.unique_key, order])
+      );
+      baseOpenUniqueKeys = new Set(baseOpenOrdersByKey.keys());
       baseOpenOrderCount = baseOpenOrders.length;
     } catch (e) {
       if (e instanceof BaseReadonlyReauthorizationRequiredError) {
@@ -160,6 +169,10 @@ export async function GET(req: Request) {
 
       return {
         unique_key: uk,
+        ordered_timestamp: resolveOrderedTimestamp(
+          baseOpenOrdersByKey.get(uk)?.ordered,
+          safeSnap.ordered_timestamp
+        ),
         receiver_name: safeSnap.receiver_name,
         order_date: safeSnap.order_date,
         shipping_method_name: safeSnap.shipping_method_name,
@@ -189,20 +202,8 @@ export async function GET(req: Request) {
       };
     });
 
-    // ソート: 先頭グループ先頭 → order_date 降順（新しい順）→ unique_key 昇順
-    const isTopGroup = (o: (typeof orders)[0]) =>
-      o.needs_initialization ||
-      o.has_multiple_shipping_lines ||
-      o.has_unknown_shipping_method ||
-      o.hold_flag;
-
-    orders.sort((a, b) => {
-      const aTop = isTopGroup(a);
-      const bTop = isTopGroup(b);
-      if (aTop !== bTop) return aTop ? -1 : 1;
-      if (a.order_date !== b.order_date) return a.order_date > b.order_date ? -1 : 1;
-      return a.unique_key < b.unique_key ? -1 : 1;
-    });
+    // UI-LIST-ORDER-01: 要確認先頭固定を行わず、BASE orderedの新しい順に統一する。
+    orders.sort(compareOrdersNewestFirst);
 
     const uninitialized_count = orders.filter((o) => o.needs_initialization).length;
     const unselectable_count = orders.filter((o) => !o.selectable_for_session).length;
