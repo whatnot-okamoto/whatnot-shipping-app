@@ -4,6 +4,7 @@ import {
   resolveOrderedTimestamp,
 } from "../lib/order-list-ordering.ts";
 import {
+  buildPromotedOrderSnapshot,
   getStaffReviewSnapshotChanges,
   hasStaffReviewSnapshotDiff,
   needsOrderedTimestampRepair,
@@ -84,11 +85,82 @@ assert.equal(
   "zero pending timestamp must not overwrite the existing snapshot"
 );
 assert.equal(
+  buildPromotedOrderSnapshot(repairedSnapshot, {
+    ...legacySnapshot,
+    ordered_timestamp: 0,
+  }),
+  null,
+  "zero pending timestamp without a business diff must not promote"
+);
+assert.equal(
   needsOrderedTimestampRepair(repairedSnapshot, {
     ...legacySnapshot,
     ordered_timestamp: -1,
   }),
   false
+);
+
+// 業務差分は昇格するが、無効なpending時刻は保存payloadへ通さない。
+const zeroTimestampBusinessDiff = {
+  ...legacySnapshot,
+  ordered_timestamp: 0,
+  item_count: 2,
+};
+const promotedWithExistingTimestamp = buildPromotedOrderSnapshot(
+  repairedSnapshot,
+  zeroTimestampBusinessDiff
+);
+assert.ok(promotedWithExistingTimestamp);
+assert.equal(promotedWithExistingTimestamp.item_count, 2);
+assert.equal(
+  promotedWithExistingTimestamp.ordered_timestamp,
+  200,
+  "business fields must promote while preserving the valid existing timestamp"
+);
+
+const promotedWithoutValidTimestamp = buildPromotedOrderSnapshot(
+  legacySnapshot,
+  zeroTimestampBusinessDiff
+);
+assert.ok(promotedWithoutValidTimestamp);
+assert.equal(promotedWithoutValidTimestamp.item_count, 2);
+const persistedWithoutValidTimestamp = JSON.parse(
+  JSON.stringify(promotedWithoutValidTimestamp)
+);
+assert.equal(
+  Object.hasOwn(persistedWithoutValidTimestamp, "ordered_timestamp"),
+  false,
+  "zero must not be serialized for persistence when neither side has a valid timestamp"
+);
+assert.equal(
+  Object.hasOwn(
+    buildPromotedOrderSnapshot(
+      { ...legacySnapshot, ordered_timestamp: 0 },
+      zeroTimestampBusinessDiff
+    ),
+    "ordered_timestamp"
+  ),
+  false,
+  "an existing zero timestamp must not be carried into the saved snapshot"
+);
+
+for (const invalidPendingTimestamp of [undefined, -1, 1.5]) {
+  const promoted = buildPromotedOrderSnapshot(repairedSnapshot, {
+    ...zeroTimestampBusinessDiff,
+    ordered_timestamp: invalidPendingTimestamp,
+  });
+  assert.ok(promoted);
+  assert.equal(promoted.ordered_timestamp, 200);
+}
+
+// 正常なpending時刻による欠損・不一致補完は従来どおり保存payloadへ反映する。
+assert.equal(
+  buildPromotedOrderSnapshot(legacySnapshot, timestampOnlyPending)?.ordered_timestamp,
+  200
+);
+assert.equal(
+  buildPromotedOrderSnapshot(repairedSnapshot, correctedTimestamp)?.ordered_timestamp,
+  201
 );
 
 // 既存5項目の業務差分は従来どおり検出し、昇格対象になる。

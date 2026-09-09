@@ -12,7 +12,7 @@ import {
 import { getRefetchState, setRefetchState } from "@/lib/refetch-store";
 import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
-import { shouldPromotePendingSnapshot } from "@/lib/order-snapshot-diff";
+import { buildPromotedOrderSnapshot } from "@/lib/order-snapshot-diff";
 
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
@@ -56,10 +56,15 @@ export async function POST(req: Request) {
         continue;
       }
 
-      if (existing && shouldPromotePendingSnapshot(existing, pending)) {
+      const promoted = existing
+        ? buildPromotedOrderSnapshot(existing, pending)
+        : null;
+
+      if (promoted) {
         // 業務差分あり、または時刻補完対象 → order_snapshot:{unique_key} に昇格（上書き）
+        // pending時刻が無効な場合は既存の正常値を維持し、無効値を正常時刻として保存しない。
         // Section 0: 差分確認完了後のみ order_snapshot を上書き可
-        await redis.set(`order_snapshot:${uniqueKey}`, JSON.stringify(pending));
+        await redis.set(`order_snapshot:${uniqueKey}`, JSON.stringify(promoted));
       }
       // 昇格対象外・またはexisting未存在 → snapshotは変更しない
 

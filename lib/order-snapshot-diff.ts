@@ -55,3 +55,29 @@ export function shouldPromotePendingSnapshot(
     needsOrderedTimestampRepair(existing, pending)
   );
 }
+
+/**
+ * 差分確認完了時に保存するsnapshotを組み立てる。
+ * pendingの時刻が無効なら既存の正常値を維持し、既存値も無効なら時刻自体を保存しない。
+ */
+export function buildPromotedOrderSnapshot(
+  existing: OrderSnapshot,
+  pending: OrderSnapshot
+): OrderSnapshot | null {
+  if (!shouldPromotePendingSnapshot(existing, pending)) return null;
+
+  if (isValidOrderedTimestamp(pending.ordered_timestamp)) {
+    return pending;
+  }
+
+  if (isValidOrderedTimestamp(existing.ordered_timestamp)) {
+    return {
+      ...pending,
+      ordered_timestamp: existing.ordered_timestamp,
+    };
+  }
+
+  const promoted = { ...pending };
+  delete promoted.ordered_timestamp;
+  return promoted;
+}
