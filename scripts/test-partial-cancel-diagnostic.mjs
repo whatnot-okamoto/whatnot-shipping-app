@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   AMOUNT_PATH_KEYS,
   FORMULA_RELATION_KEYS,
@@ -10,6 +11,7 @@ import {
   BASE_ORDER_DETAIL_URL,
   CLI_EXIT_CODES,
   HTTP_RESPONSE_MAX_BYTES,
+  readHiddenOrderId,
   runPartialCancelDiagnostic,
   serializeCliOutcome,
 } from "./diagnose-partial-cancel.mjs";
@@ -26,6 +28,11 @@ globalThis.fetch = async () => {
 
 const clone = (value) => structuredClone(value);
 const formulaKey = (amount, shipping) => `${amount}__${shipping}`;
+const assertUnresolvableShipping = (fixture) => {
+  const result = analyzePartialCancellationV2(fixture);
+  assert.equal(result.shippingLineItemScope, "unresolvable_or_invalid");
+  assert.equal(result.outcome, "stop_indeterminate");
+};
 
 try {
   const partial = analyzePartialCancellationV2(clone(partialCancelFixture));
@@ -152,12 +159,12 @@ try {
   const mixedTaxFixture = clone(partialCancelFixture);
   mixedTaxFixture.order_items.push({
     ...clone(mixedTaxFixture.order_items[0]),
-    order_item_id: "active-8",
+    order_item_id: 10003,
     consumption_tax_rate: 8,
   });
   mixedTaxFixture.order_items.push({
     ...clone(mixedTaxFixture.order_items[1]),
-    order_item_id: "cancelled-10",
+    order_item_id: 10004,
     consumption_tax_rate: 10,
   });
   const mixedTax = analyzePartialCancellationV2(mixedTaxFixture);
@@ -199,20 +206,32 @@ try {
     "invalid"
   );
 
-  const stringMatchFixture = clone(normalFixture);
-  stringMatchFixture.order_items[0].order_item_id = "01";
-  stringMatchFixture.shipping_lines[0].order_item_ids = [1];
-  assert.equal(
-    analyzePartialCancellationV2(stringMatchFixture).shippingLineItemScope,
-    "unresolvable_or_invalid"
-  );
+  const itemIdWrongTypeFixture = clone(normalFixture);
+  itemIdWrongTypeFixture.order_items[0].order_item_id = "20001";
+  assertUnresolvableShipping(itemIdWrongTypeFixture);
+
+  const shippingIdWrongTypeFixture = clone(normalFixture);
+  shippingIdWrongTypeFixture.shipping_lines[0].order_item_ids = [20001];
+  assertUnresolvableShipping(shippingIdWrongTypeFixture);
+
+  const nonDecimalShippingIdFixture = clone(normalFixture);
+  nonDecimalShippingIdFixture.shipping_lines[0].order_item_ids = ["active-1"];
+  assertUnresolvableShipping(nonDecimalShippingIdFixture);
+
+  const unsafeItemIdFixture = clone(normalFixture);
+  unsafeItemIdFixture.order_items[0].order_item_id =
+    Number.MAX_SAFE_INTEGER + 1;
+  assertUnresolvableShipping(unsafeItemIdFixture);
+
+  const unsafeShippingIdFixture = clone(normalFixture);
+  unsafeShippingIdFixture.shipping_lines[0].order_item_ids = [
+    "9007199254740992",
+  ];
+  assertUnresolvableShipping(unsafeShippingIdFixture);
 
   const unknownShippingIdFixture = clone(normalFixture);
-  unknownShippingIdFixture.shipping_lines[0].order_item_ids = ["missing"];
-  assert.equal(
-    analyzePartialCancellationV2(unknownShippingIdFixture).shippingLineItemScope,
-    "unresolvable_or_invalid"
-  );
+  unknownShippingIdFixture.shipping_lines[0].order_item_ids = ["99999"];
+  assertUnresolvableShipping(unknownShippingIdFixture);
 
   const nullShippingLinesFixture = clone(normalFixture);
   nullShippingLinesFixture.shipping_lines = null;
@@ -229,22 +248,16 @@ try {
   );
 
   const duplicateItemIdFixture = clone(partialCancelFixture);
-  duplicateItemIdFixture.order_items[1].order_item_id = "active-1";
-  assert.equal(
-    analyzePartialCancellationV2(duplicateItemIdFixture).shippingLineItemScope,
-    "unresolvable_or_invalid"
-  );
+  duplicateItemIdFixture.order_items[1].order_item_id = 10001;
+  assertUnresolvableShipping(duplicateItemIdFixture);
 
   const duplicateShippingIdFixture = clone(partialCancelFixture);
-  duplicateShippingIdFixture.shipping_lines[1].order_item_ids = ["active-1"];
-  assert.equal(
-    analyzePartialCancellationV2(duplicateShippingIdFixture).shippingLineItemScope,
-    "unresolvable_or_invalid"
-  );
+  duplicateShippingIdFixture.shipping_lines[1].order_item_ids = ["10001"];
+  assertUnresolvableShipping(duplicateShippingIdFixture);
 
   const mixedLineFixture = clone(partialCancelFixture);
   mixedLineFixture.shipping_lines = [
-    { shipping_fee: 100, order_item_ids: ["active-1", 2] },
+    { shipping_fee: 100, order_item_ids: ["10001", "10002"] },
   ];
   const mixedLine = analyzePartialCancellationV2(mixedLineFixture);
   assert.equal(mixedLine.shippingLineItemScope, "active_and_cancelled_items");
@@ -257,7 +270,7 @@ try {
 
   const cancelledOnlyShippingFixture = clone(partialCancelFixture);
   cancelledOnlyShippingFixture.shipping_lines = [
-    { shipping_fee: 50, order_item_ids: [2] },
+    { shipping_fee: 50, order_item_ids: ["10002"] },
   ];
   assert.equal(
     analyzePartialCancellationV2(cancelledOnlyShippingFixture)
@@ -427,6 +440,101 @@ try {
       }),
   });
   assert.equal(timedOut.stderrCode, "STOP_TIMEOUT");
+
+  let headersReturned = false;
+  let bodyReadStarted = false;
+  let bodyAbortObserved = false;
+  const bodyReadTimedOut = await runPartialCancelDiagnostic({
+    environment: {
+      APP_ENVIRONMENT: "development",
+      BASE_DATA_MODE: "readonly",
+      BASE_READONLY_ACCESS_TOKEN: "fixture",
+    },
+    argv: ["node", "script"],
+    readOrderId: async () => "fixture",
+    requestTimeoutMs: 5,
+    fetchImpl: async (_url, { signal }) => {
+      headersReturned = true;
+      return {
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({
+            read: () => {
+              bodyReadStarted = true;
+              return new Promise((_resolve, reject) => {
+                signal.addEventListener(
+                  "abort",
+                  () => {
+                    bodyAbortObserved = true;
+                    reject(new Error("fixture body read aborted"));
+                  },
+                  { once: true }
+                );
+              });
+            },
+            releaseLock: () => {},
+          }),
+        },
+      };
+    },
+  });
+  assert.equal(headersReturned, true);
+  assert.equal(bodyReadStarted, true);
+  assert.equal(bodyAbortObserved, true);
+  assert.equal(bodyReadTimedOut.stderrCode, "STOP_TIMEOUT");
+
+  class FakeTtyInput extends EventEmitter {
+    constructor() {
+      super();
+      this.isTTY = true;
+      this.rawModes = [];
+      this.encodings = [];
+      this.resumed = false;
+      this.paused = false;
+    }
+
+    setRawMode(value) {
+      this.rawModes.push(value);
+    }
+
+    resume() {
+      this.resumed = true;
+    }
+
+    pause() {
+      this.paused = true;
+    }
+
+    setEncoding(value) {
+      this.encodings.push(value);
+    }
+  }
+
+  const fakeTty = new FakeTtyInput();
+  let stdoutWriteCount = 0;
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = () => {
+    stdoutWriteCount += 1;
+    return true;
+  };
+  let hiddenOrderId;
+  try {
+    const hiddenOrderIdPromise = readHiddenOrderId(fakeTty);
+    for (const character of "fixture-order-id") {
+      fakeTty.emit("keypress", character, { name: character });
+    }
+    fakeTty.emit("keypress", "\r", { name: "return" });
+    hiddenOrderId = await hiddenOrderIdPromise;
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+  assert.equal(hiddenOrderId, "fixture-order-id");
+  assert.deepEqual(fakeTty.rawModes, [true, false]);
+  assert.equal(fakeTty.resumed, true);
+  assert.equal(fakeTty.paused, true);
+  assert.deepEqual(fakeTty.encodings, ["utf8"]);
+  assert.equal(stdoutWriteCount, 0);
 
   const pipedCli = spawnSync(
     process.execPath,

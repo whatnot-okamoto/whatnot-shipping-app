@@ -3,8 +3,8 @@ export const partialCancelFixture = {
   total: 1_090,
   shipping_fee: 100,
   shipping_lines: [
-    { shipping_fee: 100, order_item_ids: ["active-1"] },
-    { shipping_fee: 50, order_item_ids: [2] },
+    { shipping_fee: 100, order_item_ids: ["10001"] },
+    { shipping_fee: 50, order_item_ids: ["10002"] },
   ],
   order_discount: { discount: 20 },
   order_header_coin: { discount: 10 },
@@ -12,7 +12,7 @@ export const partialCancelFixture = {
   cod_fee: 15,
   order_items: [
     {
-      order_item_id: "active-1",
+      order_item_id: 10001,
       status: "ordered",
       price: 500,
       amount: 2,
@@ -25,7 +25,7 @@ export const partialCancelFixture = {
       title: "MUST_NOT_APPEAR_IN_OUTPUT",
     },
     {
-      order_item_id: 2,
+      order_item_id: 10002,
       status: "cancelled",
       price: 500,
       amount: 1,
@@ -49,11 +49,11 @@ export const normalFixture = {
   cod_fee: 0,
   shipping_fee: 100,
   shipping_lines: [
-    { shipping_fee: 100, order_item_ids: ["normal-1"] },
+    { shipping_fee: 100, order_item_ids: ["20001"] },
   ],
   order_items: [
     {
-      order_item_id: "normal-1",
+      order_item_id: 20001,
       status: "dispatched",
       price: 500,
       amount: 2,
@@ -77,7 +77,7 @@ export const paidOptionFixture = {
   shipping_fee: 100,
   order_items: [
     {
-      order_item_id: "option-1",
+      order_item_id: 30001,
       status: "ordered",
       price: 2_000,
       amount: 2,

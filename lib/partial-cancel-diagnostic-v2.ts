@@ -284,14 +284,26 @@ function deriveTaxRateComposition(items: UnknownRecord[]): TaxRateComposition {
   return rates.has(8) ? "rate_8_only" : "rate_10_only";
 }
 
-function identifierToString(value: unknown): string | null {
-  if (typeof value === "string") {
-    return value.length > 0 && value.length <= 128 ? String(value) : null;
+const MAX_SAFE_INTEGER_DECIMAL = String(Number.MAX_SAFE_INTEGER);
+
+function orderItemIdentifierToString(value: unknown): string | null {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : null;
+}
+
+function shippingOrderItemIdentifier(value: unknown): string | null {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    return null;
   }
-  if (typeof value === "number" && Number.isSafeInteger(value)) {
-    return String(value);
+  if (
+    value.length > MAX_SAFE_INTEGER_DECIMAL.length ||
+    (value.length === MAX_SAFE_INTEGER_DECIMAL.length &&
+      value > MAX_SAFE_INTEGER_DECIMAL)
+  ) {
+    return null;
   }
-  return null;
+  return value;
 }
 
 type ShippingAnalysis = {
@@ -331,7 +343,7 @@ function deriveShippingLines(
 
   const itemStatusById = new Map<string, string>();
   for (let index = 0; index < items.length; index += 1) {
-    const id = identifierToString(items[index].order_item_id);
+    const id = orderItemIdentifierToString(items[index].order_item_id);
     if (id === null || itemStatusById.has(id)) return invalidShipping();
     itemStatusById.set(id, statuses[index]);
   }
@@ -357,7 +369,7 @@ function deriveShippingLines(
     let lineActive = false;
     let lineCancelled = false;
     for (const rawId of line.order_item_ids) {
-      const id = identifierToString(rawId);
+      const id = shippingOrderItemIdentifier(rawId);
       if (id === null || seenShippingItemIds.has(id) || !itemStatusById.has(id)) {
         return invalidShipping();
       }
