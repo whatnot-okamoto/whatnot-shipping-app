@@ -11,6 +11,8 @@
     "test:receipt-share": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-receipt-share-token.mjs",
     "test:order-list-ordering": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-order-list-ordering.mjs",
     "test:development-environment": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-development-environment.mjs",
+    "test:partial-cancel-diagnostic": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/test-partial-cancel-diagnostic.mjs",
+    "test:partial-cancel-launcher": "node scripts/test-partial-cancel-launcher.mjs",
     "test:redis-namespace": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/test-redis-namespace.mjs",
     "test:base-readonly-oauth": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth.mjs",
     "test:base-readonly-oauth-cleanup": "node --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-base-readonly-oauth-cleanup.mjs",

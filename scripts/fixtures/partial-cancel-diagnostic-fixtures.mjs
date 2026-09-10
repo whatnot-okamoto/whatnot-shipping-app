@@ -1,0 +1,92 @@
+export const partialCancelFixture = {
+  cancelled: null,
+  total: 1_090,
+  shipping_fee: 100,
+  shipping_lines: [
+    { shipping_fee: 100, order_item_ids: ["active-1"] },
+    { shipping_fee: 50, order_item_ids: [2] },
+  ],
+  order_discount: { discount: 20 },
+  order_header_coin: { discount: 10 },
+  order_amount_adjustment: { adjusted_amount: 5 },
+  cod_fee: 15,
+  order_items: [
+    {
+      order_item_id: "active-1",
+      status: "ordered",
+      price: 500,
+      amount: 2,
+      total: 1_000,
+      item_total: 1_000,
+      option_total: 0,
+      options: [],
+      shipping_fee: 100,
+      consumption_tax_rate: 10,
+      title: "MUST_NOT_APPEAR_IN_OUTPUT",
+    },
+    {
+      order_item_id: 2,
+      status: "cancelled",
+      price: 500,
+      amount: 1,
+      total: 500,
+      item_total: 500,
+      option_total: 0,
+      options: [],
+      shipping_fee: 50,
+      consumption_tax_rate: 8,
+      title: "MUST_NOT_APPEAR_IN_OUTPUT",
+    },
+  ],
+};
+
+export const normalFixture = {
+  cancelled: null,
+  total: 1_100,
+  order_discount: { discount: 0 },
+  order_header_coin: { discount: 0 },
+  order_amount_adjustment: { adjusted_amount: 0 },
+  cod_fee: 0,
+  shipping_fee: 100,
+  shipping_lines: [
+    { shipping_fee: 100, order_item_ids: ["normal-1"] },
+  ],
+  order_items: [
+    {
+      order_item_id: "normal-1",
+      status: "dispatched",
+      price: 500,
+      amount: 2,
+      total: 1_000,
+      item_total: 1_000,
+      option_total: 0,
+      options: [],
+      shipping_fee: 100,
+      consumption_tax_rate: 10,
+    },
+  ],
+};
+
+export const paidOptionFixture = {
+  cancelled: null,
+  total: 7_100,
+  order_discount: { discount: 0 },
+  order_header_coin: { discount: 0 },
+  order_amount_adjustment: { adjusted_amount: 0 },
+  cod_fee: 0,
+  shipping_fee: 100,
+  order_items: [
+    {
+      order_item_id: "option-1",
+      status: "ordered",
+      price: 2_000,
+      amount: 2,
+      total: 7_000,
+      item_total: 4_000,
+      option_total: 3_000,
+      options: [{ price: 500 }, { price: 1_000 }],
+      shipping_fee: 100,
+      consumption_tax_rate: 10,
+    },
+  ],
+};

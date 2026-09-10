@@ -1,145 +1,272 @@
+import { pathToFileURL } from "node:url";
 import { emitKeypressEvents } from "node:readline";
-import { analyzePartialCancellation } from "../lib/partial-cancel-diagnostic.ts";
+import { analyzePartialCancellationV2 } from "../lib/partial-cancel-diagnostic-v2.ts";
 
-const BASE_ORDER_DETAIL_URL = "https://api.thebase.in/1/orders/detail";
-const REQUEST_TIMEOUT_MS = 15_000;
+export const BASE_ORDER_DETAIL_URL = "https://api.thebase.in/1/orders/detail";
+export const REQUEST_TIMEOUT_MS = 15_000;
+export const HTTP_RESPONSE_MAX_BYTES = 1_048_576;
+export const TOKEN_MAX_CHARACTERS = 4_096;
+export const ORDER_ID_MAX_CHARACTERS = 128;
 
-function stop(message) {
-  console.error(`停止: ${message}`);
-  process.exit(1);
+export const CLI_EXIT_CODES = Object.freeze({
+  PASS_ENUM_COMPLETE: 0,
+  STOP_ENUM_INDETERMINATE: 20,
+  STOP_RUNTIME_BOUNDARY: 21,
+  STOP_INPUT: 22,
+  STOP_TIMEOUT: 23,
+  STOP_TRANSPORT: 24,
+  STOP_HTTP: 25,
+  STOP_RESPONSE_TOO_LARGE: 26,
+  STOP_RESPONSE_BODY: 27,
+  STOP_RESPONSE_SCHEMA: 28,
+  STOP_INTERNAL: 29,
+});
+
+class DiagnosticStop extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "DiagnosticStop";
+    this.code = code;
+  }
 }
 
-function assertSafeEnvironment() {
+function assertSafeEnvironment(environment, argv) {
+  if (argv.length !== 2) throw new DiagnosticStop("STOP_RUNTIME_BOUNDARY");
   if (
-    process.env.APP_ENVIRONMENT !== "development" ||
-    process.env.BASE_DATA_MODE !== "readonly"
+    environment.APP_ENVIRONMENT !== "development" ||
+    environment.BASE_DATA_MODE !== "readonly"
   ) {
-    stop(
-      "APP_ENVIRONMENT=development / BASE_DATA_MODE=readonly の明示設定が必要です。"
-    );
+    throw new DiagnosticStop("STOP_RUNTIME_BOUNDARY");
   }
-  if (process.env.BASE_API_TOKEN || process.env.BASE_API_REFRESH_TOKEN) {
-    stop(
-      "Production用と区別できないBASE token変数が存在します。専用Development環境を確認してください。"
-    );
+  const token = environment.BASE_READONLY_ACCESS_TOKEN;
+  if (typeof token !== "string" || token.length === 0) {
+    throw new DiagnosticStop("STOP_RUNTIME_BOUNDARY");
   }
-  if (!process.env.BASE_READONLY_ACCESS_TOKEN) {
-    stop("BASE_READONLY_ACCESS_TOKEN が未設定です。");
+  if (token.length > TOKEN_MAX_CHARACTERS) {
+    throw new DiagnosticStop("STOP_RUNTIME_BOUNDARY");
+  }
+  for (const forbiddenName of [
+    "BASE_API_TOKEN",
+    "BASE_API_REFRESH_TOKEN",
+    "BASE_CLIENT_ID",
+    "BASE_CLIENT_SECRET",
+    "BASE_REDIRECT_URI",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "VERCEL_ENV",
+    "VERCEL_GIT_COMMIT_REF",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(environment, forbiddenName)) {
+      throw new DiagnosticStop("STOP_RUNTIME_BOUNDARY");
+    }
   }
 }
 
-async function readHiddenLine(prompt) {
-  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
-    stop("注文IDはTTYから対話入力してください。pipeや引数では受け付けません。");
+export async function readHiddenOrderId(input = process.stdin) {
+  if (!input.isTTY || typeof input.setRawMode !== "function") {
+    throw new DiagnosticStop("STOP_INPUT");
   }
 
-  process.stdout.write(prompt);
-  emitKeypressEvents(process.stdin);
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
+  emitKeypressEvents(input);
+  input.setRawMode(true);
+  input.resume();
+  input.setEncoding("utf8");
 
   return new Promise((resolve, reject) => {
     let value = "";
+    let exceeded = false;
     const cleanup = () => {
-      process.stdin.off("keypress", onKeypress);
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-      process.stdout.write("\n");
+      input.off("keypress", onKeypress);
+      input.setRawMode(false);
+      input.pause();
     };
     const onKeypress = (text, key) => {
       if (key?.ctrl && key.name === "c") {
         cleanup();
-        reject(new Error("入力を中断しました。"));
-        return;
-      }
-      if (key?.name === "return" || key?.name === "enter") {
+        reject(new DiagnosticStop("STOP_INPUT"));
+      } else if (key?.name === "return" || key?.name === "enter") {
         cleanup();
-        resolve(value.trim());
-        return;
-      }
-      if (key?.name === "backspace") {
+        const normalized = value.trim();
+        if (
+          exceeded ||
+          !new RegExp(`^[A-Za-z0-9_-]{1,${ORDER_ID_MAX_CHARACTERS}}$`).test(
+            normalized
+          )
+        ) {
+          reject(new DiagnosticStop("STOP_INPUT"));
+        } else {
+          resolve(normalized);
+        }
+      } else if (key?.name === "backspace") {
         value = value.slice(0, -1);
-        return;
+      } else if (text && !key?.ctrl && !key?.meta) {
+        if (value.length >= ORDER_ID_MAX_CHARACTERS) exceeded = true;
+        else value += text;
       }
-      if (text && !key?.ctrl && !key?.meta) value += text;
     };
-    process.stdin.on("keypress", onKeypress);
+    input.on("keypress", onKeypress);
   });
 }
 
-function printResult(result) {
-  const labels = {
-    normal: "通常候補",
-    partial_cancel: "一部キャンセル候補",
-    full_cancel: "全体キャンセル候補",
-    indeterminate: "判定不能",
-    explained: "説明可能",
-    unexplained_difference: "未説明差額あり",
-    "8_only": "8%のみ",
-    "10_only": "10%のみ",
-    mixed_8_10: "8%・10%混在",
+async function readBoundedHttpBody(response, maximumBytes) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw new DiagnosticStop("STOP_RESPONSE_BODY");
+  }
+  const declaredLength = response.headers?.get?.("content-length");
+  if (declaredLength !== null && declaredLength !== undefined) {
+    if (!/^\d+$/.test(declaredLength)) {
+      throw new DiagnosticStop("STOP_RESPONSE_BODY");
+    }
+    const parsedLength = Number(declaredLength);
+    if (!Number.isSafeInteger(parsedLength)) {
+      throw new DiagnosticStop("STOP_RESPONSE_BODY");
+    }
+    if (parsedLength > maximumBytes) {
+      throw new DiagnosticStop("STOP_RESPONSE_TOO_LARGE");
+    }
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new DiagnosticStop("STOP_RESPONSE_BODY");
+      }
+      received += value.byteLength;
+      if (!Number.isSafeInteger(received) || received > maximumBytes) {
+        throw new DiagnosticStop("STOP_RESPONSE_TOO_LARGE");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    throw new DiagnosticStop("STOP_RESPONSE_BODY");
+  }
+}
+
+export async function runPartialCancelDiagnostic({
+  environment = process.env,
+  argv = process.argv,
+  fetchImpl = globalThis.fetch,
+  readOrderId = readHiddenOrderId,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+  responseMaximumBytes = HTTP_RESPONSE_MAX_BYTES,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
+} = {}) {
+  try {
+    assertSafeEnvironment(environment, argv);
+    const uniqueKey = await readOrderId();
+    if (
+      typeof uniqueKey !== "string" ||
+      !new RegExp(`^[A-Za-z0-9_-]{1,${ORDER_ID_MAX_CHARACTERS}}$`).test(uniqueKey)
+    ) {
+      throw new DiagnosticStop("STOP_INPUT");
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeoutImpl(() => controller.abort(), requestTimeoutMs);
+    let bodyText;
+    try {
+      const response = await fetchImpl(
+        `${BASE_ORDER_DETAIL_URL}/${encodeURIComponent(uniqueKey)}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${environment.BASE_READONLY_ACCESS_TOKEN}`,
+          },
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        }
+      );
+      if (!response?.ok) throw new DiagnosticStop("STOP_HTTP");
+      bodyText = await readBoundedHttpBody(response, responseMaximumBytes);
+    } catch (error) {
+      if (error instanceof DiagnosticStop) throw error;
+      throw new DiagnosticStop(
+        controller.signal.aborted ? "STOP_TIMEOUT" : "STOP_TRANSPORT"
+      );
+    } finally {
+      clearTimeoutImpl(timer);
+    }
+
+    let body;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      throw new DiagnosticStop("STOP_RESPONSE_BODY");
+    }
+
+    let diagnostic;
+    try {
+      diagnostic = analyzePartialCancellationV2(body?.order ?? body);
+    } catch {
+      throw new DiagnosticStop("STOP_RESPONSE_SCHEMA");
+    }
+    return {
+      stdoutRecord: diagnostic,
+      stderrCode:
+        diagnostic.outcome === "pass_enum_complete"
+          ? null
+          : "STOP_ENUM_INDETERMINATE",
+      exitCode:
+        diagnostic.outcome === "pass_enum_complete"
+          ? CLI_EXIT_CODES.PASS_ENUM_COMPLETE
+          : CLI_EXIT_CODES.STOP_ENUM_INDETERMINATE,
+    };
+  } catch (error) {
+    const code =
+      error instanceof DiagnosticStop && codeHasExit(error.code)
+        ? error.code
+        : "STOP_INTERNAL";
+    return { stdoutRecord: null, stderrCode: code, exitCode: CLI_EXIT_CODES[code] };
+  }
+}
+
+function codeHasExit(code) {
+  return Object.prototype.hasOwnProperty.call(CLI_EXIT_CODES, code);
+}
+
+export function serializeCliOutcome(outcome) {
+  return {
+    stdout:
+      outcome.stdoutRecord === null
+        ? ""
+        : `${JSON.stringify(outcome.stdoutRecord)}\n`,
+    stderr: outcome.stderrCode === null ? "" : `${outcome.stderrCode}\n`,
+    exitCode: outcome.exitCode,
   };
-  console.log("=== BASE注文詳細 read-only診断結果 ===");
-  console.log(`トップレベルcancelled: ${result.topLevelCancelled}`);
-  console.log(
-    `商品status: ${result.knownItemStatuses.join(" / ") || "既知値なし"}`
-  );
-  console.log(`未知status: ${result.unknownItemStatusPresent ? "あり" : "なし"}`);
-  console.log(`キャンセル候補: ${labels[result.cancellationCandidate]}`);
-  console.log(
-    `キャンセル商品がorder_itemsに残る: ${result.cancelledItemsRemainInOrderItems}`
-  );
-  console.log(`金額関係: ${labels[result.amountRelation]}`);
-  console.log(`税率構成: ${labels[result.taxRateComposition]}`);
-  console.log("固有情報・件数・実金額・生レスポンスは表示していません。");
 }
 
 async function main() {
-  assertSafeEnvironment();
-  const uniqueKey = await readHiddenLine("注文ID（非表示入力）: ");
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(uniqueKey)) {
-    stop("注文IDの形式が不正です。");
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(
-      `${BASE_ORDER_DETAIL_URL}/${encodeURIComponent(uniqueKey)}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${process.env.BASE_READONLY_ACCESS_TOKEN}`,
-        },
-        cache: "no-store",
-        redirect: "error",
-        signal: controller.signal,
-      }
-    );
-  } catch {
-    stop("注文詳細GETに失敗しました。詳細は非表示です。");
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!response.ok) {
-    stop(`注文詳細GETに失敗しました（HTTP ${response.status}）。`);
-  }
-
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    stop("JSONレスポンスを安全に解析できませんでした。");
-  }
-
-  try {
-    printResult(analyzePartialCancellation(body?.order ?? body));
-  } catch {
-    stop("注文構造を判定できませんでした。生レスポンスは表示しません。");
-  }
+  const outcome = serializeCliOutcome(await runPartialCancelDiagnostic());
+  if (outcome.stdout) process.stdout.write(outcome.stdout);
+  if (outcome.stderr) process.stderr.write(outcome.stderr);
+  process.exitCode = outcome.exitCode;
 }
 
-main().catch(() => stop("予期しないエラーで停止しました。"));
+const isMain =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  main().catch(() => {
+    process.stderr.write("STOP_INTERNAL\n");
+    process.exitCode = CLI_EXIT_CODES.STOP_INTERNAL;
+  });
+}
