@@ -11,6 +11,7 @@ import {
   BASE_ORDER_DETAIL_URL,
   CLI_EXIT_CODES,
   HTTP_RESPONSE_MAX_BYTES,
+  REQUEST_TIMEOUT_MS,
   readHiddenOrderId,
   runPartialCancelDiagnostic,
   serializeCliOutcome,
@@ -35,6 +36,8 @@ const assertUnresolvableShipping = (fixture) => {
 };
 
 try {
+  assert.equal(REQUEST_TIMEOUT_MS, 15_000);
+
   const partial = analyzePartialCancellationV2(clone(partialCancelFixture));
   assert.equal(partial.outcome, "pass_enum_complete");
   assert.equal(partial.cancellationCandidate, "partial_cancel");
