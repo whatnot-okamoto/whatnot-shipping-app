@@ -325,6 +325,13 @@ function deriveShippingLines(
   items: UnknownRecord[],
   statuses: string[]
 ): ShippingAnalysis {
+  const itemStatusById = new Map<string, string>();
+  for (let index = 0; index < items.length; index += 1) {
+    const id = orderItemIdentifierToString(items[index].order_item_id);
+    if (id === null || itemStatusById.has(id)) return invalidShipping();
+    itemStatusById.set(id, statuses[index]);
+  }
+
   if (!hasOwn(order, "shipping_lines")) {
     return {
       scope: "no_shipping_lines",
@@ -339,13 +346,6 @@ function deriveShippingLines(
       allLines: { state: "present", value: 0 },
       activeLines: { state: "present", value: 0 },
     };
-  }
-
-  const itemStatusById = new Map<string, string>();
-  for (let index = 0; index < items.length; index += 1) {
-    const id = orderItemIdentifierToString(items[index].order_item_id);
-    if (id === null || itemStatusById.has(id)) return invalidShipping();
-    itemStatusById.set(id, statuses[index]);
   }
 
   let allTotal = 0;

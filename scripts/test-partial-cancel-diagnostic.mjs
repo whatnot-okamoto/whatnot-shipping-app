@@ -232,6 +232,35 @@ try {
   ];
   assertUnresolvableShipping(unsafeShippingIdFixture);
 
+  const missingShippingLinesWithWrongItemIdFixture = clone(normalFixture);
+  delete missingShippingLinesWithWrongItemIdFixture.shipping_lines;
+  missingShippingLinesWithWrongItemIdFixture.order_items[0].order_item_id =
+    "20001";
+  assertUnresolvableShipping(missingShippingLinesWithWrongItemIdFixture);
+
+  const emptyShippingLinesWithDuplicateItemIdFixture =
+    clone(partialCancelFixture);
+  emptyShippingLinesWithDuplicateItemIdFixture.shipping_lines = [];
+  emptyShippingLinesWithDuplicateItemIdFixture.order_items[1].order_item_id =
+    10001;
+  assertUnresolvableShipping(emptyShippingLinesWithDuplicateItemIdFixture);
+
+  const missingShippingLinesWithValidItemIdsFixture = clone(normalFixture);
+  delete missingShippingLinesWithValidItemIdsFixture.shipping_lines;
+  assert.equal(
+    analyzePartialCancellationV2(missingShippingLinesWithValidItemIdsFixture)
+      .shippingLineItemScope,
+    "no_shipping_lines"
+  );
+
+  const emptyShippingLinesWithValidItemIdsFixture = clone(normalFixture);
+  emptyShippingLinesWithValidItemIdsFixture.shipping_lines = [];
+  assert.equal(
+    analyzePartialCancellationV2(emptyShippingLinesWithValidItemIdsFixture)
+      .shippingLineItemScope,
+    "no_shipping_lines"
+  );
+
   const unknownShippingIdFixture = clone(normalFixture);
   unknownShippingIdFixture.shipping_lines[0].order_item_ids = ["99999"];
   assertUnresolvableShipping(unknownShippingIdFixture);
