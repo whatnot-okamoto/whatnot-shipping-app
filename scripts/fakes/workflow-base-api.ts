@@ -8,15 +8,21 @@ export {
 
 let orders: BaseOrder[] = [];
 const failedKeys = new Set<string>();
+let fetchFailureMessage = "fixture fetch failure";
 
 export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   orders = structuredClone(nextOrders);
   failedKeys.clear();
+  fetchFailureMessage = "fixture fetch failure";
 }
 
 export function setWorkflowFetchFailures(uniqueKeys: string[]): void {
   failedKeys.clear();
   for (const key of uniqueKeys) failedKeys.add(key);
+}
+
+export function setWorkflowFetchFailureMessage(message: string): void {
+  fetchFailureMessage = message;
 }
 
 export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
@@ -38,7 +44,7 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
 }
 
 export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
-  if (failedKeys.has(uniqueKey)) throw new Error("fixture fetch failure");
+  if (failedKeys.has(uniqueKey)) throw new Error(fetchFailureMessage);
   const order = orders.find((candidate) => candidate.unique_key === uniqueKey);
   if (!order) throw new Error("fixture order not found");
   return structuredClone(order);

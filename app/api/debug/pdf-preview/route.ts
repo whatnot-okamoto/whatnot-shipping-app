@@ -1,7 +1,7 @@
 // POST /api/debug/pdf-preview
 // 検証専用: 任意の BASE 注文 unique_key を受け取り、納品書 PDF を生成して返す。
 // Upstash 書き込み・フラグ更新・BASE 書き戻しは一切行わない。
-// エラーレスポンスにスタックトレース・内部構造・個人情報を含めない（詳細はサーバーログのみ）。
+// エラーレスポンス・サーバーログのどちらにも注文由来の詳細を含めない。
 
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
@@ -156,11 +156,8 @@ export async function POST(req: Request) {
       status: 200,
       headers: responseHeaders,
     });
-  } catch (error) {
-    console.error(
-      "[debug/pdf-preview] error:",
-      error instanceof Error ? error.message : String(error)
-    );
+  } catch {
+    console.error("[debug/pdf-preview] PDF generation failed");
     return NextResponse.json({ error: ERROR_GENERIC }, { status: 500 });
   }
 }

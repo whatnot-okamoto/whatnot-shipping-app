@@ -5,8 +5,6 @@ const projectRoot = path.resolve(import.meta.dirname, "..");
 const redirects = new Map([
   ["@/lib/auth", "scripts/fakes/workflow-auth.ts"],
   ["@/lib/base-api", "scripts/fakes/workflow-base-api.ts"],
-  ["@/lib/pdf-generator", "scripts/fakes/workflow-pdf-generator.ts"],
-  ["@/lib/receipt-share-token", "scripts/fakes/workflow-receipt-share-token.ts"],
 ]);
 
 export const resolve = createWorkflowRouteResolver(projectRoot, redirects);

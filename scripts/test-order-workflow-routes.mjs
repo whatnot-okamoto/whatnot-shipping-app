@@ -123,4 +123,76 @@ const recoveredResponse = await post(sessionStartRoute, "/api/session/start", {
 assert.equal(recoveredResponse.status, 200);
 assert.equal((await recoveredResponse.json()).expanded_unique_key_count, 2);
 
+// verified_blocked: 今回cycleで詳細取得は成功したが、未知statusのため自動処理不可。
+await clearMemoryRedis();
+const blockedByStatus = makeOrder("TEST-VERIFIED-BLOCKED", "停止町4-4", 301);
+blockedByStatus.order_items[0].status = "future_status";
+await initializeOrderData([blockedByStatus]);
+baseFake.setWorkflowBaseOrders([blockedByStatus]);
+baseFake.setWorkflowFetchFailures([]);
+assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
+assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
+const blockedStatusResponse = await post(sessionStartRoute, "/api/session/start", {
+  selected_unique_keys: [blockedByStatus.unique_key],
+});
+assert.equal(blockedStatusResponse.status, 409);
+const blockedStatusBody = await blockedStatusResponse.json();
+assert.deepEqual(blockedStatusBody.blocked_orders, [
+  {
+    unique_key: blockedByStatus.unique_key,
+    reason: "blocked",
+    issues: ["cancellation_state_unknown"],
+  },
+]);
+const blockedStatusView = buildSessionStartFailure(blockedStatusBody);
+assert.ok(blockedStatusView);
+const blockedStatusHtml = renderToStaticMarkup(
+  createElement(SessionStartRecoveryPanel, {
+    failure: blockedStatusView,
+    isRefetching: false,
+    onRefetch() {},
+    onClearSelection() {},
+  })
+);
+assert.match(blockedStatusHtml, /TEST-VERIFIED-BLOCKED/);
+assert.match(blockedStatusHtml, /商品statusを確認できない/);
+assert.match(blockedStatusHtml, /正常な別U2を選び直せます/);
+assert.match(blockedStatusHtml, /選択を解除して注文一覧に戻る/);
+assert.doesNotMatch(blockedStatusHtml, /緊急解除/);
+
+// not_in_open_orders: BASE未対応一覧にないだけでキャンセル・出荷済みとは断定しない。
+await clearMemoryRedis();
+const disappearedOrder = makeOrder("TEST-NOT-IN-OPEN-ORDERS", "確認町5-5", 401);
+await initializeOrderData([disappearedOrder]);
+baseFake.setWorkflowBaseOrders([]);
+assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
+assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
+const disappearedResponse = await post(sessionStartRoute, "/api/session/start", {
+  selected_unique_keys: [disappearedOrder.unique_key],
+});
+assert.equal(disappearedResponse.status, 409);
+const disappearedBody = await disappearedResponse.json();
+assert.deepEqual(disappearedBody.blocked_orders, [
+  {
+    unique_key: disappearedOrder.unique_key,
+    reason: "not_in_open_orders",
+    issues: ["not_in_open_orders"],
+  },
+]);
+const disappearedView = buildSessionStartFailure(disappearedBody);
+assert.ok(disappearedView);
+const disappearedHtml = renderToStaticMarkup(
+  createElement(SessionStartRecoveryPanel, {
+    failure: disappearedView,
+    isRefetching: false,
+    onRefetch() {},
+    onClearSelection() {},
+  })
+);
+assert.match(disappearedHtml, /TEST-NOT-IN-OPEN-ORDERS/);
+assert.match(disappearedHtml, /BASEで各注文の現在状態を確認/);
+assert.match(disappearedHtml, /未発送かつ出荷対象の場合だけ/);
+assert.match(disappearedHtml, /選択を解除して注文一覧に戻る/);
+assert.doesNotMatch(disappearedHtml, /緊急解除/);
+
 console.log("order workflow route tests passed");

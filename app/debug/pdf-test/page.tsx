@@ -21,6 +21,8 @@ export default function PdfTestPage() {
   const [receiptNote, setReceiptNote] = useState("");
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   // 納品書セクション・領収書セクションそれぞれで独立した警告 state を保持
   const {
@@ -50,6 +52,20 @@ export default function PdfTestPage() {
       });
   }, [router]);
 
+  useEffect(
+    () => () => {
+      if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl);
+    },
+    [receiptPreviewUrl]
+  );
+
+  useEffect(
+    () => () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    },
+    [previewUrl]
+  );
+
   async function handleReceiptSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!receiptUniqueKey.trim()) {
@@ -58,6 +74,7 @@ export default function PdfTestPage() {
     }
 
     setReceiptError(null);
+    setReceiptPreviewUrl(null);
     resetReceiptPaymentWarning();
     setReceiptLoading(true);
 
@@ -94,24 +111,8 @@ export default function PdfTestPage() {
       parseReceiptPaymentWarning(res);
 
       const blob = await res.blob();
-      const contentDisposition = res.headers.get("Content-Disposition") ?? "";
-      let filename = "BASE領収書.pdf";
-      const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-      if (utf8Match) {
-        filename = decodeURIComponent(utf8Match[1]);
-      } else {
-        const asciiMatch = contentDisposition.match(/filename="([^"]+)"/i);
-        if (asciiMatch) filename = asciiMatch[1];
-      }
-
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      setReceiptPreviewUrl(url);
     } catch {
       setReceiptError("通信エラーが発生しました。再試行してください。");
     } finally {
@@ -127,6 +128,7 @@ export default function PdfTestPage() {
     }
 
     setError(null);
+    setPreviewUrl(null);
     resetPaymentWarning();
     setLoading(true);
 
@@ -157,26 +159,10 @@ export default function PdfTestPage() {
       // PAYMENT-LABEL-UNKNOWN-01 警告 header の解析（共有 hook）
       parsePaymentWarning(res);
 
-      // PDF ダウンロード処理
+      // 実注文PDFを端末へ保存せず、画面内の一時Blob URLで確認する。
       const blob = await res.blob();
-      const contentDisposition = res.headers.get("Content-Disposition") ?? "";
-      let filename = "TEST_BASE納品書.pdf";
-      const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-      if (utf8Match) {
-        filename = decodeURIComponent(utf8Match[1]);
-      } else {
-        const asciiMatch = contentDisposition.match(/filename="([^"]+)"/i);
-        if (asciiMatch) filename = asciiMatch[1];
-      }
-
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      setPreviewUrl(url);
     } catch {
       setError("通信エラーが発生しました。再試行してください。");
     } finally {
@@ -260,12 +246,20 @@ export default function PdfTestPage() {
 
           <PaymentLabelWarningBanner warning={receiptPaymentWarning} />
 
+          {receiptPreviewUrl && (
+            <iframe
+              title="領収書PDFプレビュー"
+              src={receiptPreviewUrl}
+              className="h-[70vh] w-full rounded border border-gray-300"
+            />
+          )}
+
           <button
             type="submit"
             disabled={receiptLoading}
             className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm font-medium"
           >
-            {receiptLoading ? "PDF出力中..." : "領収書 PDF を出力する"}
+            {receiptLoading ? "PDF生成中..." : "領収書PDFを画面で確認する"}
           </button>
         </form>
       </section>
@@ -318,12 +312,20 @@ export default function PdfTestPage() {
 
           <PaymentLabelWarningBanner warning={paymentWarning} />
 
+          {previewUrl && (
+            <iframe
+              title="納品書PDFプレビュー"
+              src={previewUrl}
+              className="h-[70vh] w-full rounded border border-gray-300"
+            />
+          )}
+
           <button
             type="submit"
             disabled={loading}
             className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm font-medium"
           >
-            {loading ? "PDF出力中..." : "PDFを出力する"}
+            {loading ? "PDF生成中..." : "納品書PDFを画面で確認する"}
           </button>
         </form>
       </section>
