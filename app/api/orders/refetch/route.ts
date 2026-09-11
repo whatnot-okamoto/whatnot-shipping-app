@@ -2,6 +2,7 @@
 // BASE APIから最新の注文情報を取得し、order_snapshot_pendingを生成して差分を判定する。
 // U1・U2・U4・order_snapshot は更新しない（DATA-01 T1原則）。
 
+import { randomUUID } from "crypto";
 import { redis } from "@/lib/upstash";
 import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
 import {
@@ -12,8 +13,10 @@ import {
   type OrderSnapshot,
 } from "@/lib/order-store";
 import { resetRefetchState, setRefetchState } from "@/lib/refetch-store";
+import type { RefetchOrderResult } from "@/lib/refetch-store";
 import { requireAuth } from "@/lib/auth";
 import { getStaffReviewSnapshotChanges } from "@/lib/order-snapshot-diff";
+import { assessOrderForPdf } from "@/lib/pdf-order-assessment";
 
 export type DiffItem = {
   unique_key: string;
@@ -63,7 +66,8 @@ export async function POST(req: Request) {
 
   try {
     // 手順1: refetch_stateを初期化
-    await resetRefetchState();
+    const refetchCycleId = randomUUID();
+    await resetRefetchState(refetchCycleId);
 
     // 手順2: 既存のpendingを全削除
     await deleteAllOrderSnapshotPending();
@@ -109,7 +113,8 @@ export async function POST(req: Request) {
 
     // 手順5・6: 既存+snapshotありの注文のみ詳細取得してpending生成・差分比較
     const diffSummary: DiffItem[] = [];
-    const pendingSnapshots = new Map<string, OrderSnapshot>();
+    const orderResults: Record<string, RefetchOrderResult> = {};
+    const failedUniqueKeys: string[] = [];
 
     for (const uniqueKey of existingWithSnapshot) {
       try {
@@ -119,25 +124,56 @@ export async function POST(req: Request) {
         ]);
         if (!existingSnap) continue; // 取得競合（稀）
 
-        const pending = buildOrderSnapshotFromDetail(detail, existingSnap.bundle_group_id);
+        const assessment = assessOrderForPdf(detail);
+        const pending = buildOrderSnapshotFromDetail(
+          detail,
+          existingSnap.bundle_group_id,
+          refetchCycleId
+        );
         await setOrderSnapshotPending(uniqueKey, pending);
-        pendingSnapshots.set(uniqueKey, pending);
+        orderResults[uniqueKey] = {
+          status:
+            assessment.generationOutcome === "eligible"
+              ? "verified_eligible"
+              : "verified_blocked",
+          cancellation_state: assessment.cancellationState,
+          issues: assessment.issues,
+        };
 
         const diffItem = comparePendingToSnapshot(uniqueKey, existingSnap, pending);
         if (diffItem) diffSummary.push(diffItem);
       } catch {
-        // 詳細取得失敗は軽微扱い
+        failedUniqueKeys.push(uniqueKey);
+        orderResults[uniqueKey] = {
+          status: "fetch_failed",
+          issues: [],
+        };
         diffSummary.push({
           unique_key: uniqueKey,
           diff_type: "other",
-          description: "再取得中にエラーが発生しました",
-          severity: "info",
+          description: "注文詳細を取得できませんでした。この注文は今回の選択対象から外れます",
+          severity: "warning",
         });
       }
     }
 
     // 消えた注文をdiff_summaryに追加
     for (const key of disappeared) {
+      const existingSnapshot = await getOrderSnapshot(key);
+      if (existingSnapshot) {
+        const pending: OrderSnapshot = {
+          ...existingSnapshot,
+          pdf_verification_cycle_id: refetchCycleId,
+          open_order_presence: "not_in_open_orders",
+          pdf_generation_outcome: "blocked",
+          pdf_issue_codes: ["not_in_open_orders"],
+        };
+        await setOrderSnapshotPending(key, pending);
+      }
+      orderResults[key] = {
+        status: "not_in_open_orders",
+        issues: ["not_in_open_orders"],
+      };
       diffSummary.push({
         unique_key: key,
         diff_type: "disappeared",
@@ -164,6 +200,9 @@ export async function POST(req: Request) {
       diff_confirmed_flag: false,
       refetched_at: new Date().toISOString(),
       has_new_uninitialized: hasNewUninitialized,
+      refetch_cycle_id: refetchCycleId,
+      refetch_result: failedUniqueKeys.length > 0 ? "partial" : "complete",
+      order_results: orderResults,
     });
 
     // 手順8: レスポンス返却
@@ -175,6 +214,8 @@ export async function POST(req: Request) {
         has_diff: diffSummary.length > 0,
         has_new_uninitialized: hasNewUninitialized,
         new_uninitialized_count: newOrders.length,
+        has_fetch_failures: failedUniqueKeys.length > 0,
+        failed_unique_keys: failedUniqueKeys,
         diff_summary: diffSummary,
       },
     });

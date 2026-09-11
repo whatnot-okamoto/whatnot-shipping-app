@@ -9,6 +9,11 @@
 import { createHash } from "crypto";
 import { redis } from "@/lib/upstash";
 import type { BaseOrder } from "@/lib/base-api";
+import {
+  assessOrderForPdf,
+  type CancellationState,
+  type GenerationIssueCode,
+} from "@/lib/pdf-order-assessment";
 import { getReceiverName, getReceiverAddress, getReceiverZipCode, getReceiverPrefecture } from "@/lib/base-api";
 import {
   classifyShippingMethod,
@@ -41,6 +46,12 @@ export type OrderSnapshot = {
   remark: string;
   item_count: number;
   items_summary: string;
+  /** 現在の再取得cycleでPDF適格性を確認した場合だけ保持する。 */
+  pdf_verification_cycle_id?: string;
+  open_order_presence?: "present" | "not_in_open_orders";
+  cancellation_state?: CancellationState;
+  pdf_generation_outcome?: "eligible" | "blocked";
+  pdf_issue_codes?: GenerationIssueCode[];
 };
 
 /**
@@ -235,7 +246,8 @@ export async function initializeOrderData(
 function buildOrderSnapshot(
   order: BaseOrder,
   bundleGroupId: string,
-  category: CarrierCategory
+  category: CarrierCategory,
+  verificationCycleId?: string
 ): OrderSnapshot {
   const linesCount = order.shipping_lines.length;
   let shippingMethodName = "";
@@ -262,6 +274,8 @@ function buildOrderSnapshot(
     itemsSummary = `${order.order_items[0].title} 他${order.order_items.length - 1}点`;
   }
 
+  const pdfAssessment = assessOrderForPdf(order);
+
   return {
     unique_key: order.unique_key,
     bundle_group_id: bundleGroupId,
@@ -276,6 +290,13 @@ function buildOrderSnapshot(
     remark: order.remark,
     item_count: order.order_items.length,
     items_summary: itemsSummary,
+    ...(verificationCycleId
+      ? { pdf_verification_cycle_id: verificationCycleId }
+      : {}),
+    open_order_presence: "present",
+    cancellation_state: pdfAssessment.cancellationState,
+    pdf_generation_outcome: pdfAssessment.generationOutcome,
+    pdf_issue_codes: pdfAssessment.issues,
   };
 }
 
@@ -464,7 +485,8 @@ export async function getOrderSnapshots(
  */
 export function buildOrderSnapshotFromDetail(
   order: BaseOrder,
-  bundleGroupId: string
+  bundleGroupId: string,
+  verificationCycleId?: string
 ): OrderSnapshot {
   let category: CarrierCategory = "unknown";
   if (order.shipping_lines.length === 1) {
@@ -475,7 +497,7 @@ export function buildOrderSnapshotFromDetail(
     );
     category = result.category;
   }
-  return buildOrderSnapshot(order, bundleGroupId, category);
+  return buildOrderSnapshot(order, bundleGroupId, category, verificationCycleId);
 }
 
 // ============================================================================

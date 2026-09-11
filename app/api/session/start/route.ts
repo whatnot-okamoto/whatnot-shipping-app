@@ -17,6 +17,7 @@ import { startSession } from "@/lib/session-store";
 import { getRefetchState } from "@/lib/refetch-store";
 import { getOrderSnapshots, getBundleStates, getOrderStates } from "@/lib/order-store";
 import { requireAuth } from "@/lib/auth";
+import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
 
 export async function POST(request: Request) {
   const authError = await requireAuth(request);
@@ -92,6 +93,24 @@ export async function POST(request: Request) {
     }
   }
   const expandedUniqueKeys = [...expandedUniqueKeySet];
+
+  // 今回の再取得cycleで確認・差分承認された注文だけをロック対象にする。
+  // 過去cycleの成功結果や、U2展開で加わった未確認注文を通さない。
+  const expandedSnapshotMap = await getOrderSnapshots(expandedUniqueKeys);
+  const verificationFailures = findSelectionVerificationFailures(
+    refetchState,
+    expandedSnapshotMap,
+    expandedUniqueKeys
+  );
+  if (verificationFailures.length > 0) {
+    return Response.json(
+      {
+        error: "ORDER_NOT_ELIGIBLE: アプリで処理できない注文が含まれています",
+        blocked_orders: verificationFailures,
+      },
+      { status: 409 }
+    );
+  }
 
   // ⑤ C5・C6 検証（ロック対象U1全件。Upstashキー: order:{unique_key} ORDER-FIELD-01準拠）
   const u1Map = await getOrderStates(expandedUniqueKeys);

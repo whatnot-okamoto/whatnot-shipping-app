@@ -9,6 +9,7 @@ import { redis } from "@/lib/upstash";
 import { fetchOrderDetail } from "@/lib/base-api";
 import { getBundleStates, getOrderStates } from "@/lib/order-store";
 import { checkTaxRates, checkPaymentLabels, generateShippingDocumentsPdf } from "@/lib/pdf-generator";
+import { prepareOrdersForPdf } from "@/lib/pdf-order-assessment";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
 const ERROR_TAX_8PERCENT =
@@ -98,17 +99,52 @@ export async function POST(req: Request) {
 
     // (4) BASE詳細API逐次取得（ロック対象のみ・初回は逐次・無制限並列禁止）
     const orders = [];
+    const failedOrders: Array<{ unique_key: string; reason: "base_order_fetch_failed" }> = [];
     for (const uk of allUniqueKeys) {
-      const order = await fetchOrderDetail(uk);
-      orders.push(order);
+      try {
+        const order = await fetchOrderDetail(uk);
+        orders.push(order);
+      } catch {
+        failedOrders.push({ unique_key: uk, reason: "base_order_fetch_failed" });
+      }
     }
+    if (failedOrders.length > 0) {
+      return NextResponse.json(
+        {
+          outcome: "retryable_error",
+          error: "一部の注文詳細を取得できませんでした。セッションを維持したまま再試行してください。",
+          failed_orders: failedOrders,
+        },
+        { status: 503 }
+      );
+    }
+
+    const preparation = prepareOrdersForPdf(orders);
+    const blockedOrders = preparation.assessments
+      .filter(({ assessment }) => assessment.generationOutcome === "blocked")
+      .map(({ unique_key, assessment }) => ({
+        unique_key,
+        cancellation_state: assessment.cancellationState,
+        issues: assessment.issues,
+      }));
+    if (blockedOrders.length > 0) {
+      return NextResponse.json(
+        {
+          outcome: "blocked",
+          error: "アプリで自動処理できない注文が含まれています。対象注文と理由を確認してください。",
+          blocked_orders: blockedOrders,
+        },
+        { status: 422 }
+      );
+    }
+    const preparedOrders = preparation.preparedOrders;
 
     // (4-b) PDF-AMOUNT-01 商品税率チェック
     //   - 8%商品は通常出力する
     //   - 税率不明商品だけがPDF出力停止・HTTP 422の対象
     //   - has8percent分岐は既存参照として残るが、現在のcheckTaxRatesからは返らない
     //   - エラー時もpdf_output_done_flagは変更しない
-    const taxCheck = checkTaxRates(orders);
+    const taxCheck = checkTaxRates(preparedOrders);
     if (!taxCheck.ok) {
       const errorMessage =
         taxCheck.reason === "has8percent" ? ERROR_TAX_8PERCENT : ERROR_TAX_UNKNOWN;
@@ -117,14 +153,14 @@ export async function POST(req: Request) {
 
     // (4-c) PAYMENT-LABEL-UNKNOWN-01 支払い方法ラベル未定義チェック（警告モデル・停止しない）
     //   - checkTaxRates 通過後のみ実行（税率エラー時は早期 return 済み）
-    const paymentLabelCheck = checkPaymentLabels(orders);
+    const paymentLabelCheck = checkPaymentLabels(preparedOrders);
 
     // (5) U1データ取得（receipt設定・carrier）
     const orderStateMap = await getOrderStates(allUniqueKeys);
 
     // (6) 入力データ組み立て（U1不在は全体失敗）
     const inputs = [];
-    for (const order of orders) {
+    for (const order of preparedOrders) {
       const orderState = orderStateMap.get(order.unique_key);
       if (!orderState) {
         console.error(
@@ -167,11 +203,13 @@ export async function POST(req: Request) {
       status: 200,
       headers: responseHeaders,
     });
-  } catch (error) {
+  } catch {
     console.error(
-      "[pdf/generate] error:",
-      error instanceof Error ? error.message : String(error)
+      "[pdf/generate] fatal error"
     );
-    return NextResponse.json({ error: ERROR_GENERIC }, { status: 500 });
+    return NextResponse.json(
+      { outcome: "fatal_error", error: ERROR_GENERIC },
+      { status: 500 }
+    );
   }
 }

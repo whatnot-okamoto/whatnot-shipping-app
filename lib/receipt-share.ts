@@ -2,17 +2,22 @@ import type { BaseOrder } from "@/lib/base-api";
 import { fetchOrderDetail } from "@/lib/base-api";
 import {
   checkPaymentLabels,
-  checkTaxRates,
   generateReceiptOnlyPdf,
 } from "@/lib/pdf-generator";
 import { PAYMENT_LABELS } from "@/lib/pdf-config";
 import type { U1Data } from "@/lib/order-store";
 import type { ReceiptSharePayload } from "@/lib/receipt-share-token";
+import {
+  prepareOrderForPdf,
+  type CancellationState,
+  type GenerationIssueCode,
+  type OrderGenerationAssessment,
+} from "@/lib/pdf-order-assessment";
 
 const NORMAL_RECEIPT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 export type ReceiptOrderSummary = {
-  uniqueKey: string;
+  unique_key: string;
   purchaserName: string;
   ordered: number;
   dispatched: number | null;
@@ -23,20 +28,34 @@ export type ReceiptOrderSummary = {
   total: number;
   warnings: string[];
   hasUnknownPayment: boolean;
+  cancellationState: CancellationState;
+  generationOutcome: "eligible" | "blocked";
+  issues: GenerationIssueCode[];
 };
 
 export type ReceiptPreparation = {
   order: BaseOrder;
   summary: ReceiptOrderSummary;
+  assessment: OrderGenerationAssessment;
 };
 
 export class ReceiptGenerationError extends Error {
-  readonly code: "tax_unknown";
+  readonly code: "blocked";
+  readonly issues: GenerationIssueCode[];
 
-  constructor(code: "tax_unknown", message: string) {
+  constructor(issues: GenerationIssueCode[]) {
+    const message = "この注文は現在の内容では領収書を生成できません。";
     super(message);
     this.name = "ReceiptGenerationError";
-    this.code = code;
+    this.code = "blocked";
+    this.issues = issues;
+  }
+}
+
+export class ReceiptOrderFetchError extends Error {
+  constructor() {
+    super("BASE注文詳細を取得できませんでした。");
+    this.name = "ReceiptOrderFetchError";
   }
 }
 
@@ -67,11 +86,12 @@ function buildWarnings(order: BaseOrder, now: number): string[] {
 
 export function buildReceiptOrderSummary(
   order: BaseOrder,
-  now = Date.now()
+  now = Date.now(),
+  assessment = prepareOrderForPdf(order).assessment
 ): ReceiptOrderSummary {
   const paymentCheck = checkPaymentLabels([order]);
   return {
-    uniqueKey: order.unique_key,
+    unique_key: order.unique_key,
     purchaserName: `${order.last_name}${order.first_name}`,
     ordered: order.ordered,
     dispatched: order.dispatched,
@@ -82,27 +102,34 @@ export function buildReceiptOrderSummary(
     total: order.total,
     warnings: buildWarnings(order, now),
     hasUnknownPayment: paymentCheck.hasUnknownPayment,
+    cancellationState: assessment.cancellationState,
+    generationOutcome: assessment.generationOutcome,
+    issues: assessment.issues,
   };
 }
 
-export function assertReceiptCanBeRendered(order: BaseOrder): void {
-  const taxCheck = checkTaxRates([order]);
-  if (!taxCheck.ok) {
-    throw new ReceiptGenerationError(
-      "tax_unknown",
-      "税率情報を確認できない商品が含まれています。"
-    );
+export function assertReceiptCanBeRendered(order: BaseOrder): BaseOrder {
+  const prepared = prepareOrderForPdf(order);
+  if (prepared.assessment.generationOutcome === "blocked") {
+    throw new ReceiptGenerationError(prepared.assessment.issues);
   }
+  return prepared.order;
 }
 
 export async function prepareReceiptOrder(
   uniqueKey: string
 ): Promise<ReceiptPreparation> {
-  const order = await fetchOrderDetail(uniqueKey);
-  assertReceiptCanBeRendered(order);
+  let order: BaseOrder;
+  try {
+    order = await fetchOrderDetail(uniqueKey);
+  } catch {
+    throw new ReceiptOrderFetchError();
+  }
+  const assessment = prepareOrderForPdf(order).assessment;
   return {
     order,
-    summary: buildReceiptOrderSummary(order),
+    assessment,
+    summary: buildReceiptOrderSummary(order, Date.now(), assessment),
   };
 }
 
@@ -127,9 +154,9 @@ export async function generateSharedReceiptPdf(
   payload: ReceiptSharePayload
 ): Promise<{ pdfBytes: Uint8Array; uniqueKeySuffix: string }> {
   const order = await fetchOrderDetail(payload.uniqueKey);
-  assertReceiptCanBeRendered(order);
-  const orderState = buildReceiptOrderState(payload, order);
-  const pdfBytes = await generateReceiptOnlyPdf([{ order, orderState }]);
+  const preparedOrder = assertReceiptCanBeRendered(order);
+  const orderState = buildReceiptOrderState(payload, preparedOrder);
+  const pdfBytes = await generateReceiptOnlyPdf([{ order: preparedOrder, orderState }]);
 
   return {
     pdfBytes,

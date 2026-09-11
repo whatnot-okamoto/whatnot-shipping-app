@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const PUBLIC_ERROR_MESSAGE =
-  "この領収書URLは利用できません。ショップへ再発行をご依頼ください。";
+  "注文内容の変更などにより、現在この領収書を表示できません。お手数ですがショップへお問い合わせください。";
 
 function commonSecurityHeaders(): Headers {
   const headers = new Headers();

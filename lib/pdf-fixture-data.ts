@@ -103,6 +103,10 @@ function makeItem(
     variation_identifier: overrides.variation_identifier ?? "",
     amount,
     price,
+    total: price * amount,
+    item_total: price * amount,
+    option_total: 0,
+    options: [],
     status: overrides.status ?? "ordered",
     consumption_tax_rate: 10,
   };

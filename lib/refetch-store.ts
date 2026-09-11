@@ -2,6 +2,10 @@
 // 再取得・差分確認フラグの永続化（Step 4-A3）
 
 import { redis } from "@/lib/upstash";
+import type {
+  CancellationState,
+  GenerationIssueCode,
+} from "@/lib/pdf-order-assessment";
 
 const KEY = "orders:refetch_state";
 
@@ -10,6 +14,19 @@ export type RefetchState = {
   diff_confirmed_flag: boolean;
   refetched_at: string | null;   // ISO 8601。resetRefetchState()時はnull
   has_new_uninitialized: boolean;
+  refetch_cycle_id?: string;
+  refetch_result?: "complete" | "partial";
+  order_results?: Record<string, RefetchOrderResult>;
+};
+
+export type RefetchOrderResult = {
+  status:
+    | "verified_eligible"
+    | "verified_blocked"
+    | "fetch_failed"
+    | "not_in_open_orders";
+  cancellation_state?: CancellationState;
+  issues: GenerationIssueCode[];
 };
 
 /** 現在の再取得状態を取得する。キーが存在しない場合はnullを返す */
@@ -26,12 +43,14 @@ export async function setRefetchState(state: RefetchState): Promise<void> {
 }
 
 /** 再取得状態を初期値でリセットする。POST /api/orders/refetch 冒頭で呼ぶ */
-export async function resetRefetchState(): Promise<void> {
+export async function resetRefetchState(refetchCycleId?: string): Promise<void> {
   const initial: RefetchState = {
     refetch_done_flag: false,
     diff_confirmed_flag: false,
     refetched_at: null,
     has_new_uninitialized: false,
+    refetch_cycle_id: refetchCycleId,
+    order_results: {},
   };
   await redis.set(KEY, JSON.stringify(initial));
 }

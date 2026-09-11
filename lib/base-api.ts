@@ -57,6 +57,14 @@ export type BaseOrderItem = {
   price: number;
   status: string;             // "ordered" / "cancelled" など
   consumption_tax_rate?: number | null;  // 消費税率（10 / 8）。PDF-AMOUNT-01 税率別集計に使用
+  /** BASE注文詳細の商品行合計。PDF金額経路の第一候補。 */
+  total?: number;
+  /** オプションを除く商品行合計。 */
+  item_total?: number;
+  /** 商品行のオプション合計。 */
+  option_total?: number;
+  /** 商品単価へ加算されるオプション。 */
+  options?: Array<{ price: number; [key: string]: unknown }>;
 };
 
 /**
@@ -493,6 +501,7 @@ function getMockOrderDetail(uniqueKey: string): BaseOrder {
           title: "領収書共有テスト商品", barcode: "0000000000000",
           variation: "", variation_identifier: "",
           amount: 1, price: 4730, status: "dispatched",
+          total: 4730, item_total: 4730, option_total: 0, options: [],
           consumption_tax_rate: 10,
         },
       ],
@@ -519,6 +528,8 @@ function getMockOrderDetail(uniqueKey: string): BaseOrder {
           title: "テストTシャツ M", barcode: "4901234567890",
           variation: "", variation_identifier: "",
           amount: 2, price: 2365, status: "ordered",
+          total: 4730, item_total: 4730, option_total: 0, options: [],
+          consumption_tax_rate: 10,
         },
       ],
       shipping_lines: [
@@ -544,6 +555,8 @@ function getMockOrderDetail(uniqueKey: string): BaseOrder {
           title: "テストステッカー", barcode: "4909999999991",
           variation: "", variation_identifier: "",
           amount: 1, price: 1100, status: "ordered",
+          total: 1100, item_total: 1100, option_total: 0, options: [],
+          consumption_tax_rate: 10,
         },
       ],
       shipping_lines: [
@@ -565,6 +578,8 @@ function getMockOrderDetail(uniqueKey: string): BaseOrder {
           title: "配送対象外テスト商品", barcode: "4908888888881",
           variation: "", variation_identifier: "",
           amount: 1, price: 3300, status: "ordered",
+          total: 3300, item_total: 3300, option_total: 0, options: [],
+          consumption_tax_rate: 10,
         },
       ],
       shipping_lines: [
@@ -590,6 +605,8 @@ function getMockOrderDetail(uniqueKey: string): BaseOrder {
           title: "不明配送テスト商品", barcode: "4907777777771",
           variation: "", variation_identifier: "",
           amount: 1, price: 2200, status: "ordered",
+          total: 2200, item_total: 2200, option_total: 0, options: [],
+          consumption_tax_rate: 10,
         },
       ],
       shipping_lines: [

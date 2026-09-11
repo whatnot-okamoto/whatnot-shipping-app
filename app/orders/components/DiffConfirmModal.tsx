@@ -13,6 +13,8 @@ export type DiffResult = {
   has_diff: boolean;
   has_new_uninitialized: boolean;
   new_uninitialized_count: number;
+  has_fetch_failures?: boolean;
+  failed_unique_keys?: string[];
   diff_summary: DiffItem[];
 };
 
@@ -45,7 +47,14 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { has_diff, has_new_uninitialized, new_uninitialized_count, diff_summary } = diffResult;
+  const {
+    has_diff,
+    has_new_uninitialized,
+    new_uninitialized_count,
+    has_fetch_failures,
+    failed_unique_keys = [],
+    diff_summary,
+  } = diffResult;
 
   /** 差分確認APIを呼び出して完了する */
   const handleConfirm = async () => {
@@ -112,6 +121,16 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
       <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 p-6 flex flex-col gap-4">
         <h2 className="text-base font-semibold text-gray-900">再取得しました</h2>
 
+        {has_fetch_failures && (
+          <div className="text-sm text-amber-800 bg-amber-50 rounded p-3">
+            <p className="font-medium">一部注文の詳細を取得できませんでした</p>
+            <p className="mt-1">
+              該当注文だけを今回の選択対象から外します。確認できた別U2の注文は継続できます。
+            </p>
+            <p className="mt-1 font-mono text-xs">{failed_unique_keys.join(", ")}</p>
+          </div>
+        )}
+
         {/* パターン3：未初期化注文あり */}
         {has_new_uninitialized && (
           <>
@@ -162,6 +181,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
                   className={`text-xs px-3 py-2 rounded ${SEVERITY_CLASS[item.severity]}`}
                 >
                   <span className="font-medium mr-2">[{SEVERITY_LABEL[item.severity]}]</span>
+                  <span className="font-mono mr-2">{item.unique_key}</span>
                   {item.description}
                 </div>
               ))}

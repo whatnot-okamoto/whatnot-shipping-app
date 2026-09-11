@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import OrderStatusBadge from "./OrderStatusBadge";
 import BundleGroupIndicator from "./BundleGroupIndicator";
 import ReceiptDisableConfirmModal from "./ReceiptDisableConfirmModal";
+import type { GenerationIssueCode } from "@/lib/pdf-order-assessment";
 
 export type Order = {
   unique_key: string;
@@ -33,6 +34,9 @@ export type Order = {
   has_unknown_shipping_method: boolean;
   selectable_for_session: boolean;
   disabled_reason: string | null;
+  processing_issues: GenerationIssueCode[];
+  processing_guidance: string | null;
+  bundle_problem_orders: Array<{ unique_key: string; reason: string }>;
 };
 
 type Props = {
@@ -245,7 +249,27 @@ function OrderCardForm({ order, checked, onCheck, onRefresh, onCarrierError }: P
 
         {/* 選択不可の理由 */}
         {!order.selectable_for_session && order.disabled_reason && (
-          <p className="text-xs text-red-600 mt-0.5">{order.disabled_reason}</p>
+          <div className="mt-1 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+            <p className="font-medium">アプリ処理対象外</p>
+            <p className="break-all">BASE注文ID：{order.unique_key}</p>
+            <p>{order.disabled_reason}</p>
+            {order.processing_guidance && <p className="mt-1">{order.processing_guidance}</p>}
+            {order.bundle_problem_orders.length > 0 && (
+              <div className="mt-1">
+                <p>同じU2の各注文をBASEで確認してください：</p>
+                <ul className="list-disc pl-4">
+                  {order.bundle_problem_orders.map((problem) => (
+                    <li key={problem.unique_key}>
+                      <span className="font-mono">{problem.unique_key}</span>：{problem.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="mt-1">
+              この表示は個別対応済みを管理する機能ではありません。BASEでの対応前後に注文状態を確認し、見落とし・二重処理に注意してください。
+            </p>
+          </div>
         )}
 
         {/* 商品概要 */}

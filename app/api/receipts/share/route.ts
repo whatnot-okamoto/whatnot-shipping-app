@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/auth";
 import {
   prepareReceiptOrder,
   ReceiptGenerationError,
+  ReceiptOrderFetchError,
 } from "@/lib/receipt-share";
 import {
   createReceiptShareToken,
@@ -40,7 +41,10 @@ export async function POST(req: Request) {
 
   try {
     validateReceiptShareInput({ uniqueKey, receiptName, receiptNote });
-    const { summary } = await prepareReceiptOrder(uniqueKey);
+    const { summary, assessment } = await prepareReceiptOrder(uniqueKey);
+    if (assessment.generationOutcome === "blocked") {
+      throw new ReceiptGenerationError(assessment.issues);
+    }
     const { token, payload } = createReceiptShareToken({
       uniqueKey,
       receiptName,
@@ -72,10 +76,20 @@ export async function POST(req: Request) {
     if (error instanceof ReceiptGenerationError) {
       return NextResponse.json(
         {
-          error:
-            "税率情報を確認できない商品が含まれているため、領収書を生成できません。",
+          outcome: "blocked",
+          error: "この注文は現在の内容では領収書を発行できません。",
+          issues: error.issues,
         },
         { status: 422 }
+      );
+    }
+    if (error instanceof ReceiptOrderFetchError) {
+      return NextResponse.json(
+        {
+          outcome: "retryable_error",
+          error: "注文詳細を取得できませんでした。時間をおいて再試行してください。",
+        },
+        { status: 503 }
       );
     }
     console.error("[receipts/share] share URL creation failed");

@@ -23,6 +23,10 @@ import {
   compareOrdersNewestFirst,
   resolveOrderedTimestamp,
 } from "@/lib/order-list-ordering";
+import {
+  buildBaseReviewGuidance,
+  GENERATION_ISSUE_LABELS,
+} from "@/lib/order-generation-messages";
 
 // U1 欠損時の安全な初期値（表示用の仮値。正常初期化済み扱いにしない）
 const FALLBACK_U1: Omit<U1Data, "unique_key"> = {
@@ -108,6 +112,7 @@ export async function GET(req: Request) {
 
     // セッション情報（U3）を取得
     const session = await getCurrentSession();
+    const currentRefetchState = await getRefetchState();
 
     // U1 と snapshot を並列取得
     const [u1Map, snapshotMap] = await Promise.all([
@@ -145,6 +150,31 @@ export async function GET(req: Request) {
         : undefined;
 
       const picking_status = pickingStatusMap.get(uk) ?? "not_started";
+      const orderResult = currentRefetchState?.order_results?.[uk];
+      const orderIssues = orderResult?.issues ?? safeSnap.pdf_issue_codes ?? [];
+      const bundleProblemOrders = (bundle?.order_unique_keys ?? []).flatMap(
+        (bundleUniqueKey) => {
+          const result = currentRefetchState?.order_results?.[bundleUniqueKey];
+          const isProblem =
+            result?.status === "verified_blocked" ||
+            result?.status === "fetch_failed" ||
+            result?.status === "not_in_open_orders";
+          if (!result || !isProblem) return [];
+
+          const reason =
+            result.status === "fetch_failed"
+              ? "今回の再取得で注文詳細を取得できませんでした"
+              : result.status === "not_in_open_orders"
+                ? GENERATION_ISSUE_LABELS.not_in_open_orders
+                : result.issues
+                    .map((issue) => GENERATION_ISSUE_LABELS[issue])
+                    .join(" ");
+          return [{ unique_key: bundleUniqueKey, reason }];
+        }
+      );
+      const bundleProblemUniqueKeys = bundleProblemOrders.map(
+        (problem) => problem.unique_key
+      );
 
       // selectable_for_session 判定（優先順位順に評価）
       let selectable_for_session = true;
@@ -156,6 +186,15 @@ export async function GET(req: Request) {
       } else if (safeU1.cancelled_flag) {
         selectable_for_session = false;
         disabled_reason = "キャンセル済みの注文です";
+      } else if (orderResult?.status === "fetch_failed") {
+        selectable_for_session = false;
+        disabled_reason = "今回の再取得で注文詳細を取得できませんでした。再取得してください";
+      } else if (orderResult?.status === "verified_blocked") {
+        selectable_for_session = false;
+        disabled_reason = orderIssues.map((issue) => GENERATION_ISSUE_LABELS[issue]).join(" ");
+      } else if (bundleProblemUniqueKeys.some((key) => key !== uk)) {
+        selectable_for_session = false;
+        disabled_reason = "同じU2にアプリで処理できない注文が含まれています";
       } else if (safeSnap.has_multiple_shipping_lines) {
         selectable_for_session = false;
         disabled_reason = "C-5未確認：配送方法が複数件あります";
@@ -199,6 +238,16 @@ export async function GET(req: Request) {
           !needs_initialization && safeSnap.shipping_category === "unknown",
         selectable_for_session,
         disabled_reason,
+        processing_issues: orderIssues,
+        processing_guidance:
+          orderResult?.status === "fetch_failed"
+            ? "一時的な取得失敗です。緊急解除は不要です。この画面で再取得してください。別U2の確認済み注文は継続できます。"
+            : orderIssues.length > 0
+              ? buildBaseReviewGuidance(orderIssues)
+              : bundleProblemOrders.length > 0
+                ? "同じU2内の注文は切り離せません。各注文をBASEで確認し、このU2を外せる状態にしてから再取得してください。正常な別U2は継続できます。"
+                : null,
+        bundle_problem_orders: bundleProblemOrders,
       };
     });
 
@@ -216,9 +265,8 @@ export async function GET(req: Request) {
       refetchDoneFlag = session.refetch_done_flag;
       diffConfirmedFlag = session.diff_confirmed_flag;
     } else {
-      const refetchState = await getRefetchState();
-      refetchDoneFlag = refetchState?.refetch_done_flag ?? false;
-      diffConfirmedFlag = refetchState?.diff_confirmed_flag ?? false;
+      refetchDoneFlag = currentRefetchState?.refetch_done_flag ?? false;
+      diffConfirmedFlag = currentRefetchState?.diff_confirmed_flag ?? false;
     }
 
     return Response.json({

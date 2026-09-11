@@ -7,9 +7,17 @@ import {
   MAX_RECEIPT_NAME_LENGTH,
   MAX_RECEIPT_NOTE_LENGTH,
 } from "@/lib/receipt-share-constants";
+import {
+  buildBaseReviewGuidance,
+  GENERATION_ISSUE_LABELS,
+} from "@/lib/order-generation-messages";
+import type {
+  CancellationState,
+  GenerationIssueCode,
+} from "@/lib/pdf-order-assessment";
 
 type ReceiptOrderSummary = {
-  uniqueKey: string;
+  unique_key: string;
   purchaserName: string;
   ordered: number;
   dispatched: number | null;
@@ -20,6 +28,9 @@ type ReceiptOrderSummary = {
   total: number;
   warnings: string[];
   hasUnknownPayment: boolean;
+  cancellationState: CancellationState;
+  generationOutcome: "eligible" | "blocked";
+  issues: GenerationIssueCode[];
 };
 
 type ShareResult = {
@@ -62,6 +73,16 @@ function dispatchStatusLabel(status: string): string {
     shipping: "配送中",
   };
   return labels[status] ?? status;
+}
+
+function cancellationStateLabel(state: CancellationState): string {
+  const labels: Record<CancellationState, string> = {
+    normal: "通常注文",
+    partial_cancel: "一部キャンセル（有効商品のみ帳票へ反映）",
+    full_cancel: "全商品キャンセル",
+    cancellation_state_unknown: "判定不能",
+  };
+  return labels[state];
 }
 
 async function copyToClipboard(value: string): Promise<void> {
@@ -192,7 +213,7 @@ export default function ReceiptsPage() {
       }
 
       const data = (await res.json()) as { order: ReceiptOrderSummary };
-      setUniqueKey(data.order.uniqueKey);
+      setUniqueKey(data.order.unique_key);
       setOrder(data.order);
     } catch {
       setError("通信エラーが発生しました。再試行してください。");
@@ -202,7 +223,7 @@ export default function ReceiptsPage() {
   };
 
   const createShareUrl = async () => {
-    if (!order) return;
+    if (!order || order.generationOutcome === "blocked") return;
 
     setCreatingShare(true);
     setError(null);
@@ -213,7 +234,7 @@ export default function ReceiptsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          unique_key: order.uniqueKey,
+          unique_key: order.unique_key,
           receipt_name: receiptName,
           receipt_note: receiptNote,
         }),
@@ -338,6 +359,26 @@ export default function ReceiptsPage() {
             <section className="mt-5 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
               <h2 className="text-base font-semibold">注文概要</h2>
 
+              {order.generationOutcome === "blocked" && (
+                <div
+                  className="mt-4 rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-900"
+                  role="alert"
+                >
+                  <p className="font-semibold">この注文はアプリで領収書を発行できません。</p>
+                  <p className="mt-2 break-all">対象のBASE注文ID：{order.unique_key}</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {order.issues.map((issue) => (
+                      <li key={issue}>{GENERATION_ISSUE_LABELS[issue]}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-3">{buildBaseReviewGuidance(order.issues)}</p>
+                  <p className="mt-2">
+                    この領収書専用画面は出荷セッションと無関係なため、緊急解除は不要です。
+                    BASEを確認した後、この画面で注文情報を再取得してください。再取得しても続く場合は管理者へ確認してください。
+                  </p>
+                </div>
+              )}
+
               {order.warnings.length > 0 && (
                 <div className="mt-4 space-y-2" role="alert">
                   {order.warnings.map((warning) => (
@@ -360,7 +401,7 @@ export default function ReceiptsPage() {
               <dl className="mt-4 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
                 <div>
                   <dt className="text-gray-500">注文ID</dt>
-                  <dd className="mt-1 break-all font-medium">{order.uniqueKey}</dd>
+                  <dd className="mt-1 break-all font-medium">{order.unique_key}</dd>
                 </div>
                 <div>
                   <dt className="text-gray-500">購入者名</dt>
@@ -380,11 +421,7 @@ export default function ReceiptsPage() {
                 </div>
                 <div>
                   <dt className="text-gray-500">BASEキャンセル情報</dt>
-                  <dd className="mt-1">
-                    {order.cancelled === null
-                      ? "なし（商品単位は未判定）"
-                      : "あり（発行前にBASEで確認）"}
-                  </dd>
+                  <dd className="mt-1">{cancellationStateLabel(order.cancellationState)}</dd>
                 </div>
                 <div>
                   <dt className="text-gray-500">決済方法</dt>
@@ -418,7 +455,7 @@ export default function ReceiptsPage() {
                     type="text"
                     value={receiptName}
                     onChange={(e) => handleReceiptNameChange(e.target.value)}
-                    disabled={creatingShare}
+                    disabled={creatingShare || order.generationOutcome === "blocked"}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100"
                   />
                   <p className="mt-1 text-right text-xs text-gray-500">
@@ -438,7 +475,7 @@ export default function ReceiptsPage() {
                     type="text"
                     value={receiptNote}
                     onChange={(e) => handleReceiptNoteChange(e.target.value)}
-                    disabled={creatingShare}
+                    disabled={creatingShare || order.generationOutcome === "blocked"}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-100"
                   />
                   <p className="mt-1 text-right text-xs text-gray-500">
@@ -449,7 +486,7 @@ export default function ReceiptsPage() {
                 <button
                   type="button"
                   onClick={createShareUrl}
-                  disabled={creatingShare}
+                  disabled={creatingShare || order.generationOutcome === "blocked"}
                   className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
                 >
                   {creatingShare ? "URL作成中..." : "共有URLを作成する"}

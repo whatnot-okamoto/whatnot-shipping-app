@@ -15,6 +15,7 @@ import {
   FIXTURE_PATTERN_IDS,
   type FixturePattern,
 } from "@/lib/pdf-fixture-data";
+import { prepareOrderForPdf } from "@/lib/pdf-order-assessment";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
 const ERROR_TAX_8PERCENT =
@@ -71,8 +72,15 @@ export async function POST(req: Request) {
   const fixture = FIXTURE_DATA[patternId as FixturePattern];
 
   try {
+    const prepared = prepareOrderForPdf(fixture.order);
+    if (prepared.assessment.generationOutcome === "blocked") {
+      return NextResponse.json(
+        { error: "fixtureをPDF用に準備できません。", issues: prepared.assessment.issues },
+        { status: 422 }
+      );
+    }
     // (4) PDF-AMOUNT-01 税率チェック（pdf-preview と同仕様）
-    const taxCheck = checkTaxRates([fixture.order]);
+    const taxCheck = checkTaxRates([prepared.order]);
     if (!taxCheck.ok) {
       const errorMessage =
         taxCheck.reason === "has8percent"
@@ -82,11 +90,11 @@ export async function POST(req: Request) {
     }
 
     // (4-c) PAYMENT-LABEL-UNKNOWN-01 支払い方法ラベル未定義チェック（警告モデル・停止しない）
-    const paymentLabelCheck = checkPaymentLabels([fixture.order]);
+    const paymentLabelCheck = checkPaymentLabels([prepared.order]);
 
     // (5) PDF 生成（lib/pdf-generator.ts の既存ロジックをそのまま使用）
     const pdfBytes = await generateShippingDocumentsPdf([
-      { order: fixture.order, orderState: fixture.orderState },
+      { order: prepared.order, orderState: fixture.orderState },
     ]);
 
     // (6) レスポンス: Content-Disposition に TEST_FIXTURE_{ID}_{日時}.pdf 形式を設定

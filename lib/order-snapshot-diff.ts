@@ -52,7 +52,13 @@ export function shouldPromotePendingSnapshot(
 ): boolean {
   return (
     hasStaffReviewSnapshotDiff(existing, pending) ||
-    needsOrderedTimestampRepair(existing, pending)
+    needsOrderedTimestampRepair(existing, pending) ||
+    existing.pdf_verification_cycle_id !== pending.pdf_verification_cycle_id ||
+    existing.open_order_presence !== pending.open_order_presence ||
+    existing.cancellation_state !== pending.cancellation_state ||
+    existing.pdf_generation_outcome !== pending.pdf_generation_outcome ||
+    JSON.stringify(existing.pdf_issue_codes ?? []) !==
+      JSON.stringify(pending.pdf_issue_codes ?? [])
   );
 }
 

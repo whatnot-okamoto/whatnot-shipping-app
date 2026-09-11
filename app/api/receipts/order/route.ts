@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import {
   prepareReceiptOrder,
-  ReceiptGenerationError,
+  ReceiptOrderFetchError,
 } from "@/lib/receipt-share";
 
 const ERROR_GENERIC = "注文情報を取得できませんでした。注文IDを確認してください。";
@@ -37,13 +37,13 @@ export async function POST(req: Request) {
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error) {
-    if (error instanceof ReceiptGenerationError) {
+    if (error instanceof ReceiptOrderFetchError) {
       return NextResponse.json(
         {
-          error:
-            "税率情報を確認できない商品が含まれているため、領収書を生成できません。",
+          outcome: "retryable_error",
+          error: "注文詳細を取得できませんでした。時間をおいて再試行してください。",
         },
-        { status: 422 }
+        { status: 503 }
       );
     }
     console.error("[receipts/order] order lookup failed");

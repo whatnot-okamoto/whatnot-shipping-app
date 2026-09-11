@@ -5,6 +5,14 @@ import type { LockedBundleInfo } from "./LockedStageView";
 import ReceiptNameWarningModal from "./ReceiptNameWarningModal";
 import { usePaymentLabelWarning } from "@/app/_hooks/usePaymentLabelWarning";
 import PaymentLabelWarningBanner from "@/app/_components/PaymentLabelWarningBanner";
+import {
+  buildBaseReviewGuidance,
+  GENERATION_ISSUE_LABELS,
+} from "@/lib/order-generation-messages";
+import type {
+  CancellationState,
+  GenerationIssueCode,
+} from "@/lib/pdf-order-assessment";
 
 function extractFilenameFromContentDisposition(header: string | null): string {
   if (!header) return "whatnot-shipping.pdf";
@@ -32,13 +40,31 @@ type Props = {
   onSuccess: () => Promise<void>;
 };
 
+type BlockedOrder = {
+  unique_key: string;
+  cancellation_state: CancellationState;
+  issues: GenerationIssueCode[];
+};
+
+type FailedOrder = {
+  unique_key: string;
+  reason: "base_order_fetch_failed";
+};
+
+type PdfFailure = {
+  outcome: "blocked" | "retryable_error" | "fatal_error";
+  message: string;
+  blockedOrders: BlockedOrder[];
+  failedOrders: FailedOrder[];
+};
+
 export default function PdfOutputSection({
   pdfOutputDoneFlag,
   lockedBundles,
   onSuccess,
 }: Props) {
   const [isGenerating, setIsGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<PdfFailure | null>(null);
   const [showWarning, setShowWarning] = useState(false);
   const { paymentWarning, parsePaymentWarning } = usePaymentLabelWarning();
 
@@ -48,7 +74,7 @@ export default function PdfOutputSection({
   );
 
   const handleButtonClick = () => {
-    setError(null);
+    setFailure(null);
     if (hasEmptyReceiptName) {
       setShowWarning(true);
     } else {
@@ -58,13 +84,26 @@ export default function PdfOutputSection({
 
   const handleGenerate = async () => {
     setIsGenerating(true);
-    setError(null);
+    setFailure(null);
     try {
       const res = await fetch("/api/pdf/generate", { method: "POST" });
 
       if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        setError(data.error ?? "PDF生成に失敗しました。");
+        const data = (await res.json()) as {
+          outcome?: PdfFailure["outcome"];
+          error?: string;
+          blocked_orders?: BlockedOrder[];
+          failed_orders?: FailedOrder[];
+        };
+        setFailure({
+          outcome:
+            data.outcome === "blocked" || data.outcome === "retryable_error"
+              ? data.outcome
+              : "fatal_error",
+          message: data.error ?? "PDF生成に失敗しました。",
+          blockedOrders: data.blocked_orders ?? [],
+          failedOrders: data.failed_orders ?? [],
+        });
         return;
       }
 
@@ -85,16 +124,90 @@ export default function PdfOutputSection({
 
       await onSuccess();
     } catch {
-      setError("PDF生成中にエラーが発生しました。");
+      setFailure({
+        outcome: "retryable_error",
+        message: "PDF生成中に通信エラーが発生しました。",
+        blockedOrders: [],
+        failedOrders: [],
+      });
     } finally {
       setIsGenerating(false);
     }
   };
 
+  const affectedUniqueKeys = new Set([
+    ...(failure?.blockedOrders.map((order) => order.unique_key) ?? []),
+    ...(failure?.failedOrders.map((order) => order.unique_key) ?? []),
+  ]);
+  const affectedBundles = lockedBundles.filter((bundle) =>
+    bundle.order_ids.some((uniqueKey) => affectedUniqueKeys.has(uniqueKey))
+  );
+
   return (
     <div className="mt-6 p-4 bg-white border border-gray-200 rounded-lg shadow-sm">
-      {error && (
-        <p className="mb-3 text-sm text-red-600">{error}</p>
+      {failure && (
+        <div
+          className="mb-4 rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-900"
+          role="alert"
+        >
+          <p className="font-semibold">{failure.message}</p>
+
+          {failure.failedOrders.length > 0 && (
+            <div className="mt-3">
+              <p className="font-medium">BASE注文詳細を取得できなかった注文</p>
+              <ul className="mt-1 list-disc pl-5">
+                {failure.failedOrders.map((order) => (
+                  <li key={order.unique_key} className="break-all">
+                    BASE注文ID：{order.unique_key}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {failure.blockedOrders.map((order) => (
+            <div key={order.unique_key} className="mt-3 rounded border border-red-200 bg-white p-3">
+              <p className="break-all font-medium">BASE注文ID：{order.unique_key}</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {order.issues.map((issue) => (
+                  <li key={issue}>{GENERATION_ISSUE_LABELS[issue]}</li>
+                ))}
+              </ul>
+              <p className="mt-2">{buildBaseReviewGuidance(order.issues)}</p>
+            </div>
+          ))}
+
+          {affectedBundles.length > 0 && (
+            <p className="mt-3 break-all">
+              影響する配送グループ：
+              {affectedBundles.map((bundle) => bundle.bundle_group_id).join("、")}
+            </p>
+          )}
+
+          {failure.outcome === "retryable_error" && (
+            <p className="mt-3">
+              緊急セッション解除は不要です。現在のセッションを維持したまま、通信状態を確認してこのボタンから再試行してください。
+            </p>
+          )}
+          {failure.outcome === "blocked" && (
+            <div className="mt-3 space-y-2">
+              <p>
+                現在はロック中のため、問題注文を対象から外して正常な別U2だけを続けるには、画面下部の「緊急セッション解除」が必要です。同じU2内の注文だけを切り離すことはできません。
+              </p>
+              <p>
+                BASEで各注文の状態を確認後、問題のあるU2を選択から外して新しいセッションを開始してください。緊急解除時のCSV状態は旧セッションに保持され、新しいセッションでは初期化されます。
+              </p>
+              <p>
+                すでに取り込んだCSV、印刷済み送り状、発行済みPDFは取り消されません。重複取込・重複発行がないか確認してから再開してください。
+              </p>
+            </div>
+          )}
+          {failure.outcome === "fatal_error" && (
+            <p className="mt-3">
+              再試行しても続く場合は管理者へ確認してください。セッション解除は、注文を外して別U2を継続する必要がある場合だけ行ってください。
+            </p>
+          )}
+        </div>
       )}
 
       <PaymentLabelWarningBanner warning={paymentWarning} withMargin />

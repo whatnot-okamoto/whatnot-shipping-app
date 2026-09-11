@@ -257,6 +257,9 @@ export default function OrdersPage() {
     if (expandedOrders.some((o) => o.hold_flag)) {
       reasons.push("ロック対象に保留中の注文が含まれています");
     }
+    if (expandedOrders.some((o) => !o.selectable_for_session)) {
+      reasons.push("同じU2にアプリ処理対象外の注文が含まれています");
+    }
     return reasons;
   }, [selectedKeys, session.refetch_done_flag, session.diff_confirmed_flag, expandedOrders, carrierErrorKeys]);
 

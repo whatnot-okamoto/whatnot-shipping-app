@@ -8,6 +8,7 @@ import { requireAuth } from "@/lib/auth";
 import { fetchOrderDetail } from "@/lib/base-api";
 import { checkTaxRates, checkPaymentLabels, generateShippingDocumentsPdf, generateReceiptOnlyPdf } from "@/lib/pdf-generator";
 import type { U1Data } from "@/lib/order-store";
+import { prepareOrderForPdf } from "@/lib/pdf-order-assessment";
 
 const ERROR_GENERIC = "PDF生成に失敗しました。";
 const ERROR_TAX_8PERCENT =
@@ -74,7 +75,15 @@ export async function POST(req: Request) {
 
   try {
     // (3) BASE API から注文詳細を取得（読み取りのみ）
-    const order = await fetchOrderDetail(uniqueKey);
+    const fetchedOrder = await fetchOrderDetail(uniqueKey);
+    const prepared = prepareOrderForPdf(fetchedOrder);
+    if (prepared.assessment.generationOutcome === "blocked") {
+      return NextResponse.json(
+        { error: "この注文はアプリでPDFを生成できません。", issues: prepared.assessment.issues },
+        { status: 422 }
+      );
+    }
+    const order = prepared.order;
 
     // (4) PDF-AMOUNT-01 税率チェック（通常 PDF 生成 API と同仕様）
     const taxCheck = checkTaxRates([order]);
