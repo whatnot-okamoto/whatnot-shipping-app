@@ -7,6 +7,10 @@ import AppNavigation from "@/app/_components/AppNavigation";
 import DiffConfirmModal, { type DiffResult } from "./components/DiffConfirmModal";
 import SessionLockConfirmModal from "./components/SessionLockConfirmModal";
 import LockedStageView, { type LockedBundleInfo } from "./components/LockedStageView";
+import SessionStartRecoveryPanel, {
+  buildSessionStartFailure,
+  type SessionStartFailure,
+} from "./components/SessionStartRecoveryPanel";
 
 type CsvStatusMap = {
   nekopos: "pending" | "done" | "skipped" | "error";
@@ -64,6 +68,11 @@ type SessionCurrentApiResponse = {
 type SessionStartApiResponse = {
   success?: boolean;
   error?: string;
+  blocked_orders?: Array<{
+    unique_key?: unknown;
+    reason?: unknown;
+    issues?: unknown;
+  }>;
 };
 
 // UI側 U2展開（Step 4-B §4 展開手順①〜④）
@@ -118,6 +127,7 @@ export default function OrdersPage() {
   });
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [sessionStartFailure, setSessionStartFailure] = useState<SessionStartFailure | null>(null);
   const [readonlyReauthUrl, setReadonlyReauthUrl] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [isRefetching, setIsRefetching] = useState(false);
@@ -215,6 +225,7 @@ export default function OrdersPage() {
   };
 
   const handleRefetch = async () => {
+    setSessionStartFailure(null);
     setIsRefetching(true);
     try {
       const res = await fetch("/api/orders/refetch", { method: "POST" });
@@ -233,6 +244,7 @@ export default function OrdersPage() {
 
   const handleDiffConfirmed = () => {
     setDiffResult(null);
+    setSessionStartFailure(null);
     fetchOrdersList().catch(() => setFetchError("ネットワークエラーが発生しました"));
   };
 
@@ -281,7 +293,12 @@ export default function OrdersPage() {
       });
       const data = (await res.json()) as SessionStartApiResponse;
       if (!res.ok || !data.success) {
-        setFetchError(data.error ?? "セッション開始に失敗しました");
+        const recoverableFailure = buildSessionStartFailure(data);
+        if (recoverableFailure) {
+          setSessionStartFailure(recoverableFailure);
+        } else {
+          setFetchError(data.error ?? "セッション開始に失敗しました");
+        }
         setShowConfirmModal(false);
         return;
       }
@@ -357,6 +374,17 @@ export default function OrdersPage() {
       ) : (
         // ロック前ステージ（注文一覧・選択UI）
         <div className="max-w-3xl mx-auto px-4 py-4">
+          {sessionStartFailure && (
+            <SessionStartRecoveryPanel
+              failure={sessionStartFailure}
+              isRefetching={isRefetching}
+              onRefetch={() => void handleRefetch()}
+              onClearSelection={() => {
+                setSelectedKeys(new Set());
+                setSessionStartFailure(null);
+              }}
+            />
+          )}
           {/* メタ情報バー */}
           <div className="flex items-center gap-4 mb-4 text-sm text-gray-600 flex-wrap">
             <span className="font-medium">注文一覧</span>
