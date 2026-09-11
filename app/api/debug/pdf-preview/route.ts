@@ -1,6 +1,7 @@
 // POST /api/debug/pdf-preview
 // 検証専用: 任意の BASE 注文 unique_key を受け取り、納品書 PDF を生成して返す。
-// Upstash 書き込み・フラグ更新・BASE 書き戻しは一切行わない。
+// BASE注文やPDF完了フラグ等の業務状態・BASE注文内容は更新しない。
+// ただし、既存tokenの通常ライフサイクルにより、Upstash上のrefresh lock作成・削除やtoken更新は起こり得る。
 // エラーレスポンス・サーバーログのどちらにも注文由来の詳細を含めない。
 
 import { NextResponse } from "next/server";
@@ -99,8 +100,9 @@ export async function POST(req: Request) {
     //   - 通常経路・receiptOnly 経路の両方に適用（generate/fixture と同形）
     const paymentLabelCheck = checkPaymentLabels([order]);
 
-    // (5) U1Data 構築（Upstash 不使用・フラグ更新なし）
-    // Upstash KV・BASE API・キャッシュへの書き込みは一切行わない。
+    // (5) U1Data 構築（業務状態保存なし・PDF完了フラグ更新なし）
+    // このroute自身は業務データやBASE注文内容を書き込まない。
+    // 認証状態の更新可能性は先頭コメントのとおり。
     const orderState: U1Data = {
       unique_key: order.unique_key,
       hold_flag: false,

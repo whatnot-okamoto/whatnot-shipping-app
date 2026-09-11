@@ -21,6 +21,7 @@
     "test:pdf-recovery-contract": "node scripts/test-pdf-recovery-contract.mjs",
     "test:pdf-composite-workflows": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-real-pdf-route-test-loader.mjs scripts/test-pdf-composite-workflows.mjs",
     "test:debug-pdf-preview-safety": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-debug-pdf-preview-safety.mjs",
+    "test:isolated-production-build-contract": "node scripts/test-isolated-production-build-contract.mjs",
     "test:session-start-recovery-ui": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-session-start-recovery-ui.mjs",
     "test:order-workflow-routes": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-order-workflow-routes.mjs",
     "test:pdf-receipt-workflow-routes": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-pdf-receipt-workflow-routes.mjs",

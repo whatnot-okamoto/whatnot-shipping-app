@@ -33,6 +33,7 @@ const topLevelFiles = new Set([
   "package-lock.json",
   "tsconfig.json",
   "next-env.d.ts",
+  "proxy.ts",
   "next.config.ts",
   "next.config.js",
   "next.config.mjs",
@@ -78,9 +79,27 @@ function findEnvLikeFiles(directory) {
   return found;
 }
 
+function findFilesNamed(directory, fileName) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...findFilesNamed(absolute, fileName));
+    else if (entry.name === fileName) found.push(absolute);
+  }
+  return found;
+}
+
 const envLikeFiles = findEnvLikeFiles(candidateRoot);
 if (envLikeFiles.length > 0) {
   throw new Error("isolated source unexpectedly contains .env-like files");
+}
+const proxyFiles = findFilesNamed(candidateRoot, "proxy.ts");
+const expectedProxy = path.join(candidateRoot, "proxy.ts");
+if (
+  proxyFiles.length !== 1 ||
+  path.resolve(proxyFiles[0]) !== path.resolve(expectedProxy)
+) {
+  throw new Error("isolated source must contain exactly one root proxy.ts");
 }
 
 const expectedNodeModules = path.join(appRoot, "node_modules");
@@ -90,6 +109,7 @@ if (!lstatSync(expectedNodeModules).isDirectory()) {
 const nodeModulesTarget = realpathSync(expectedNodeModules);
 console.log(`verified_node_modules_target=${nodeModulesTarget}`);
 console.log(`candidate_env_like_files=${envLikeFiles.length}`);
+console.log(`candidate_proxy_files=${proxyFiles.length}`);
 console.log(`candidate_copied_files=${copiedFiles}`);
 
 const candidateNodeModules = path.join(candidateRoot, "node_modules");
