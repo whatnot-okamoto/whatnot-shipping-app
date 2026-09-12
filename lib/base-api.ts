@@ -374,7 +374,9 @@ async function refreshBaseToken(): Promise<string> {
  * order_items / order_receiver / shipping_lines は含まれない。
  * 詳細が必要な場合は fetchOrderDetail(unique_key) を呼ぶこと。
  */
-export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
+export async function fetchOrderedOrders(options?: {
+  signal?: AbortSignal;
+}): Promise<BaseOrderSummary[]> {
   const { baseDataMode } = resolveRuntimeConfig();
   if (baseDataMode === "mock") {
     return getMockOrderSummaries();
@@ -395,6 +397,7 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
+    signal: options?.signal,
   });
 
   if (!res.ok) {
@@ -411,7 +414,10 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
  * order_items / order_receiver / shipping_lines を含む完全な BaseOrder を返す。
  * 取得失敗時はエラーをスロー（呼び出し側でキャッチすること）。
  */
-export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
+export async function fetchOrderDetail(
+  uniqueKey: string,
+  options?: { signal?: AbortSignal }
+): Promise<BaseOrder> {
   const { baseDataMode } = resolveRuntimeConfig();
   if (baseDataMode === "mock") {
     return getMockOrderDetail(uniqueKey);
@@ -432,6 +438,7 @@ export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
+    signal: options?.signal,
   });
 
   if (!res.ok) {

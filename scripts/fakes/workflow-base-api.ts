@@ -8,12 +8,33 @@ export {
 
 let orders: BaseOrder[] = [];
 const failedKeys = new Set<string>();
+const stalledKeys = new Set<string>();
 let fetchFailureMessage = "fixture fetch failure";
+let orderListStalls = false;
+
+function waitForAbort<T>(signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((_, reject) => {
+    if (!signal) return;
+    const rejectForAbort = () =>
+      reject(new DOMException("fixture request aborted", "AbortError"));
+    if (signal.aborted) {
+      rejectForAbort();
+      return;
+    }
+    signal.addEventListener("abort", rejectForAbort, { once: true });
+  });
+}
 
 export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   orders = structuredClone(nextOrders);
   failedKeys.clear();
+  stalledKeys.clear();
   fetchFailureMessage = "fixture fetch failure";
+  orderListStalls = false;
+}
+
+export function setWorkflowOrderListStall(shouldStall: boolean): void {
+  orderListStalls = shouldStall;
 }
 
 export function setWorkflowFetchFailures(uniqueKeys: string[]): void {
@@ -21,11 +42,21 @@ export function setWorkflowFetchFailures(uniqueKeys: string[]): void {
   for (const key of uniqueKeys) failedKeys.add(key);
 }
 
+export function setWorkflowDetailStalls(uniqueKeys: string[]): void {
+  stalledKeys.clear();
+  for (const key of uniqueKeys) stalledKeys.add(key);
+}
+
 export function setWorkflowFetchFailureMessage(message: string): void {
   fetchFailureMessage = message;
 }
 
-export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
+export async function fetchOrderedOrders(options?: {
+  signal?: AbortSignal;
+}): Promise<BaseOrderSummary[]> {
+  if (orderListStalls) {
+    return waitForAbort(options?.signal);
+  }
   return orders.map((order) => ({
     unique_key: order.unique_key,
     ordered: order.ordered,
@@ -43,7 +74,11 @@ export async function fetchOrderedOrders(): Promise<BaseOrderSummary[]> {
   }));
 }
 
-export async function fetchOrderDetail(uniqueKey: string): Promise<BaseOrder> {
+export async function fetchOrderDetail(
+  uniqueKey: string,
+  options?: { signal?: AbortSignal }
+): Promise<BaseOrder> {
+  if (stalledKeys.has(uniqueKey)) return waitForAbort(options?.signal);
   if (failedKeys.has(uniqueKey)) throw new Error(fetchFailureMessage);
   const order = orders.find((candidate) => candidate.unique_key === uniqueKey);
   if (!order) throw new Error("fixture order not found");

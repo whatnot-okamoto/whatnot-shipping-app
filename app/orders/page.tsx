@@ -11,6 +11,10 @@ import SessionStartRecoveryPanel, {
   buildSessionStartFailure,
   type SessionStartFailure,
 } from "./components/SessionStartRecoveryPanel";
+import RefetchRecoveryPanel, {
+  buildRefetchFailure,
+  type RefetchFailure,
+} from "./components/RefetchRecoveryPanel";
 
 type CsvStatusMap = {
   nekopos: "pending" | "done" | "skipped" | "error";
@@ -46,6 +50,7 @@ type OrdersApiResponse = {
 type RefetchApiResponse = {
   success: boolean;
   diff_result?: DiffResult;
+  error_type?: string;
   error?: string;
 };
 
@@ -128,6 +133,7 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [sessionStartFailure, setSessionStartFailure] = useState<SessionStartFailure | null>(null);
+  const [refetchFailure, setRefetchFailure] = useState<RefetchFailure | null>(null);
   const [readonlyReauthUrl, setReadonlyReauthUrl] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [isRefetching, setIsRefetching] = useState(false);
@@ -226,17 +232,37 @@ export default function OrdersPage() {
 
   const handleRefetch = async () => {
     setSessionStartFailure(null);
+    setRefetchFailure(null);
     setIsRefetching(true);
     try {
       const res = await fetch("/api/orders/refetch", { method: "POST" });
       const data = (await res.json()) as RefetchApiResponse;
       if (!data.success || !data.diff_result) {
-        setFetchError(data.error ?? "再取得に失敗しました");
+        setRefetchFailure(
+          buildRefetchFailure(data) ?? {
+            message: data.error ?? "注文の再取得に失敗しました。",
+            retryable: true,
+          }
+        );
+        setSession((previous) => ({
+          ...previous,
+          refetch_done_flag: false,
+          diff_confirmed_flag: false,
+        }));
         return;
       }
+      setRefetchFailure(null);
       setDiffResult(data.diff_result);
     } catch {
-      setFetchError("ネットワークエラーが発生しました");
+      setRefetchFailure({
+        message: "通信が完了しませんでした。注文一覧を維持したまま再試行してください。",
+        retryable: true,
+      });
+      setSession((previous) => ({
+        ...previous,
+        refetch_done_flag: false,
+        diff_confirmed_flag: false,
+      }));
     } finally {
       setIsRefetching(false);
     }
@@ -374,6 +400,13 @@ export default function OrdersPage() {
       ) : (
         // ロック前ステージ（注文一覧・選択UI）
         <div className="max-w-3xl mx-auto px-4 py-4">
+          {refetchFailure && (
+            <RefetchRecoveryPanel
+              failure={refetchFailure}
+              isRefetching={isRefetching}
+              onRetry={() => void handleRefetch()}
+            />
+          )}
           {sessionStartFailure && (
             <SessionStartRecoveryPanel
               failure={sessionStartFailure}

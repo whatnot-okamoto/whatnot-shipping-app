@@ -526,6 +526,19 @@ export async function setOrderSnapshotPending(
   await pipe.exec();
 }
 
+/** pending Snapshot: 複数件を1 pipelineで保存し、indexにも一括追加する */
+export async function setOrderSnapshotsPending(
+  snapshots: Map<string, OrderSnapshot>
+): Promise<void> {
+  if (snapshots.size === 0) return;
+  const pipe = redis.pipeline();
+  for (const [uniqueKey, snapshot] of snapshots) {
+    pipe.set(`order_snapshot_pending:${uniqueKey}`, JSON.stringify(snapshot));
+  }
+  pipe.sadd(PENDING_INDEX_KEY, ...snapshots.keys());
+  await pipe.exec();
+}
+
 /** pending Snapshot: 1件削除。同時に index:order_snapshot_pending から SREM する */
 export async function deleteOrderSnapshotPending(
   uniqueKey: string

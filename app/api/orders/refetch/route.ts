@@ -7,8 +7,10 @@ import { redis } from "@/lib/upstash";
 import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
 import {
   getOrderSnapshot,
+  getOrderSnapshots,
   buildOrderSnapshotFromDetail,
   setOrderSnapshotPending,
+  setOrderSnapshotsPending,
   deleteAllOrderSnapshotPending,
   type OrderSnapshot,
 } from "@/lib/order-store";
@@ -24,6 +26,38 @@ export type DiffItem = {
   description: string;
   severity: "info" | "warning" | "blocking";
 };
+
+const REFETCH_BASE_REQUEST_TIMEOUT_MS = 15_000;
+
+async function withBaseRequestTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const signal = AbortSignal.timeout(REFETCH_BASE_REQUEST_TIMEOUT_MS);
+  return Promise.race([
+    operation(signal),
+    new Promise<T>((_, reject) => {
+      const rejectForTimeout = () =>
+        reject(new DOMException("BASE request timed out", "TimeoutError"));
+      if (signal.aborted) {
+        rejectForTimeout();
+        return;
+      }
+      signal.addEventListener("abort", rejectForTimeout, { once: true });
+    }),
+  ]);
+}
+
+function baseOrdersFetchFailureResponse(): Response {
+  return Response.json(
+    {
+      success: false,
+      error_type: "retryable_error",
+      error_code: "base_orders_fetch_failed",
+      error: "BASE注文一覧を取得できませんでした。注文一覧を維持したまま再試行してください。",
+    },
+    { status: 503 }
+  );
+}
 
 /** 5フィールドを比較してDiffItemを生成する。差分なしの場合はnullを返す */
 function comparePendingToSnapshot(
@@ -73,7 +107,14 @@ export async function POST(req: Request) {
     await deleteAllOrderSnapshotPending();
 
     // 手順3: BASE一覧取得 + 3条件フィルタ
-    const baseOrders = await fetchOrderedOrders();
+    let baseOrders;
+    try {
+      baseOrders = await withBaseRequestTimeout((signal) =>
+        fetchOrderedOrders({ signal })
+      );
+    } catch {
+      return baseOrdersFetchFailureResponse();
+    }
     const baseOpenOrders = baseOrders.filter(
       (o) =>
         o.dispatch_status === "ordered" &&
@@ -119,7 +160,9 @@ export async function POST(req: Request) {
     for (const uniqueKey of existingWithSnapshot) {
       try {
         const [detail, existingSnap] = await Promise.all([
-          fetchOrderDetail(uniqueKey),
+          withBaseRequestTimeout((signal) =>
+            fetchOrderDetail(uniqueKey, { signal })
+          ),
           getOrderSnapshot(uniqueKey),
         ]);
         if (!existingSnap) continue; // 取得競合（稀）
@@ -157,9 +200,11 @@ export async function POST(req: Request) {
       }
     }
 
-    // 消えた注文をdiff_summaryに追加
+    // 消えた注文をdiff_summaryに追加。snapshot read/pending writeは一括する。
+    const disappearedSnapshots = await getOrderSnapshots(disappeared);
+    const disappearedPendingSnapshots = new Map<string, OrderSnapshot>();
     for (const key of disappeared) {
-      const existingSnapshot = await getOrderSnapshot(key);
+      const existingSnapshot = disappearedSnapshots.get(key);
       if (existingSnapshot) {
         const pending: OrderSnapshot = {
           ...existingSnapshot,
@@ -168,19 +213,22 @@ export async function POST(req: Request) {
           pdf_generation_outcome: "blocked",
           pdf_issue_codes: ["not_in_open_orders"],
         };
-        await setOrderSnapshotPending(key, pending);
+        disappearedPendingSnapshots.set(key, pending);
       }
       orderResults[key] = {
         status: "not_in_open_orders",
         issues: ["not_in_open_orders"],
       };
-      diffSummary.push({
-        unique_key: key,
-        diff_type: "disappeared",
-        description: "BASE未対応一覧から削除されました（出荷済み・キャンセルの可能性）",
-        severity: "info",
-      });
+      if (existingSnapshot?.open_order_presence !== "not_in_open_orders") {
+        diffSummary.push({
+          unique_key: key,
+          diff_type: "disappeared",
+          description: "BASE未対応一覧から削除されました（出荷済み・キャンセルの可能性）",
+          severity: "info",
+        });
+      }
     }
+    await setOrderSnapshotsPending(disappearedPendingSnapshots);
 
     // 新規注文をdiff_summaryに追加
     for (const key of newOrders) {

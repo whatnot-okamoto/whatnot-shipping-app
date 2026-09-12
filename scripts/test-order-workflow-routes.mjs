@@ -195,4 +195,22 @@ assert.match(disappearedHtml, /未発送かつ出荷対象の場合だけ/);
 assert.match(disappearedHtml, /選択を解除して注文一覧に戻る/);
 assert.doesNotMatch(disappearedHtml, /緊急解除/);
 
+// 確認済みの不在状態が継続しただけなら、次cycleで同じ差分を再表示しない。
+// 表示を抑えてもnot_in_open_ordersの安全な拒否は維持する。
+assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
+const repeatedDisappearedResponse = await post(refetchRoute, "/api/orders/refetch");
+assert.equal(repeatedDisappearedResponse.status, 200);
+const repeatedDisappearedBody = await repeatedDisappearedResponse.json();
+assert.equal(repeatedDisappearedBody.diff_result.has_diff, false);
+assert.deepEqual(repeatedDisappearedBody.diff_result.diff_summary, []);
+assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
+const repeatedDisappearedStart = await post(sessionStartRoute, "/api/session/start", {
+  selected_unique_keys: [disappearedOrder.unique_key],
+});
+assert.equal(repeatedDisappearedStart.status, 409);
+assert.equal(
+  (await repeatedDisappearedStart.json()).blocked_orders[0].reason,
+  "not_in_open_orders"
+);
+
 console.log("order workflow route tests passed");
