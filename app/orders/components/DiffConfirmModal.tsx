@@ -65,6 +65,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     first_absence_count = 0,
     cycle_not_in_open_orders_count = 0,
     recovery_message,
+    recovery_status,
     has_fetch_failures,
     failed_unique_keys = [],
     diff_summary,
@@ -167,6 +168,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
         <DiffAbsenceSummary
           firstAbsenceCount={first_absence_count}
           cycleNotInOpenOrdersCount={cycle_not_in_open_orders_count}
+          recoveryStatus={recovery_status}
         />
 
         {/* パターン3：未初期化注文あり */}

@@ -472,16 +472,37 @@ assert.equal(
   false
 );
 
-// UI: first-time absences and the full current-cycle absence total remain
-// distinct instead of presenting the first-time count as the total.
-const absenceSummaryHtml = renderToStaticMarkup(
+// UI fresh: continuing absences alone are not shown again.
+const continuingAbsenceHtml = renderToStaticMarkup(
   createElement(DiffAbsenceSummary, {
-    firstAbsenceCount: 3,
+    firstAbsenceCount: 0,
     cycleNotInOpenOrdersCount: 7,
   })
 );
-assert.match(absenceSummaryHtml, /今回初めて不在となった注文：3件/);
-assert.match(absenceSummaryHtml, /今回cycleで不在判定となった総数：7件/);
+assert.equal(continuingAbsenceHtml, "");
+
+// UI fresh: only the first-absence count is shown when a new absence exists.
+const freshAbsenceHtml = renderToStaticMarkup(
+  createElement(DiffAbsenceSummary, {
+    firstAbsenceCount: 3,
+    cycleNotInOpenOrdersCount: 7,
+    recoveryStatus: "fresh",
+  })
+);
+assert.match(freshAbsenceHtml, /今回初めて不在となった注文：3件/);
+assert.doesNotMatch(freshAbsenceHtml, /今回cycleで不在判定となった総数/);
+
+// UI recovery: a partial legacy-route recovery shows the full cycle total,
+// not the first-absence count as though it were newly detected.
+const recoveryAbsenceHtml = renderToStaticMarkup(
+  createElement(DiffAbsenceSummary, {
+    firstAbsenceCount: 3,
+    cycleNotInOpenOrdersCount: 7,
+    recoveryStatus: "resuming_partial",
+  })
+);
+assert.match(recoveryAbsenceHtml, /今回cycleで不在判定となった総数：7件/);
+assert.doesNotMatch(recoveryAbsenceHtml, /今回初めて不在となった注文/);
 
 // K: new states provide the exact count; legacy states use null/count-less UI.
 await redis.del(`order_snapshot_pending:${remainingOrder.unique_key}`);
