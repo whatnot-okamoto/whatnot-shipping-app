@@ -278,12 +278,14 @@ export async function GET(req: Request) {
             locked_bundle_group_ids: session.locked_bundle_group_ids,
             refetch_done_flag: refetchDoneFlag,
             diff_confirmed_flag: diffConfirmedFlag,
+            refetch_cycle_id: currentRefetchState?.refetch_cycle_id,
           }
         : {
             session_status: "none",
             locked_bundle_group_ids: [],
             refetch_done_flag: refetchDoneFlag,
             diff_confirmed_flag: diffConfirmedFlag,
+            refetch_cycle_id: currentRefetchState?.refetch_cycle_id,
           },
       orders,
       meta: {

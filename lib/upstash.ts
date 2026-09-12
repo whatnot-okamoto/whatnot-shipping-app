@@ -6,7 +6,7 @@ import {
   createProductionRedis,
   type DevelopmentRedisLike,
 } from "@/lib/namespaced-redis";
-import type { RedisLike } from "@/lib/redis-like";
+import type { RedisLike, RedisMutation } from "@/lib/redis-like";
 import type {
   RedisPipelineLike,
   RedisSetOptions,
@@ -34,6 +34,100 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 end
 return 0
 `;
+
+const COMPARE_AND_EXPIRE_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
+  return 1
+end
+return 0
+`;
+
+const FENCED_MUTATE_SCRIPT = `
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return {0}
+end
+local mutations = cjson.decode(ARGV[2])
+local results = {1}
+for _, mutation in ipairs(mutations) do
+  local command = mutation.type
+  if command == "set" then
+    table.insert(results, redis.call("SET", KEYS[mutation.key], mutation.value))
+  elseif command == "set_nx" then
+    local result = redis.call("SET", KEYS[mutation.key], mutation.value, "NX")
+    table.insert(results, result and 1 or 0)
+  elseif command == "del" then
+    local keys = {}
+    for _, keyIndex in ipairs(mutation.keys) do
+      table.insert(keys, KEYS[keyIndex])
+    end
+    table.insert(results, redis.call("DEL", unpack(keys)))
+  elseif command == "sadd" then
+    table.insert(results, redis.call("SADD", KEYS[mutation.key], unpack(mutation.members)))
+  elseif command == "srem" then
+    table.insert(results, redis.call("SREM", KEYS[mutation.key], unpack(mutation.members)))
+  else
+    return redis.error_reply("Unsupported fenced mutation")
+  end
+end
+return results
+`;
+
+const FENCED_START_SESSION_SCRIPT = `
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return -1
+end
+local acquired = redis.call("SET", KEYS[2], ARGV[2], "NX")
+if not acquired then
+  return 0
+end
+redis.call("SET", KEYS[3], ARGV[3])
+redis.call("DEL", KEYS[4])
+return 1
+`;
+
+function serializeRedisValue(value: unknown): string {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function serializeFencedMutations(
+  leaseKey: string,
+  mutations: RedisMutation[]
+): { keys: string[]; payload: string } {
+  const keys = [leaseKey];
+  const indexes = new Map<string, number>([[leaseKey, 1]]);
+  const keyIndex = (key: string): number => {
+    const existing = indexes.get(key);
+    if (existing !== undefined) return existing;
+    keys.push(key);
+    indexes.set(key, keys.length);
+    return keys.length;
+  };
+  const encoded = mutations.map((mutation) => {
+    switch (mutation.type) {
+      case "set":
+      case "set_nx":
+        return {
+          ...mutation,
+          key: keyIndex(mutation.key),
+          value: serializeRedisValue(mutation.value),
+        };
+      case "del":
+        return { ...mutation, keys: mutation.keys.map(keyIndex) };
+      case "sadd":
+      case "srem":
+        return { ...mutation, key: keyIndex(mutation.key) };
+    }
+  });
+  return { keys, payload: JSON.stringify(encoded) };
+}
 
 function parseAtomicBoolean(result: unknown): boolean {
   if (result === 1) return true;
@@ -108,6 +202,19 @@ class UpstashRedisAdapter implements RedisLike {
     return parseAtomicBoolean(result);
   }
 
+  async compareAndExpire(
+    key: string,
+    expectedValue: string,
+    ttlSeconds: number
+  ): Promise<boolean> {
+    const result: unknown = await this.client.eval(
+      COMPARE_AND_EXPIRE_SCRIPT,
+      [key],
+      [expectedValue, String(ttlSeconds)]
+    );
+    return parseAtomicBoolean(result);
+  }
+
   async setIfValueMatches(
     guardKey: string,
     expectedGuardValue: string,
@@ -120,6 +227,49 @@ class UpstashRedisAdapter implements RedisLike {
       [expectedGuardValue, value]
     );
     return parseAtomicBoolean(result);
+  }
+
+  async fencedMutate(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    mutations: RedisMutation[]
+  ) {
+    const serialized = serializeFencedMutations(leaseKey, mutations);
+    const result: unknown = await this.client.eval(
+      FENCED_MUTATE_SCRIPT,
+      serialized.keys,
+      [expectedLeaseValue, serialized.payload]
+    );
+    if (!Array.isArray(result) || (result[0] !== 0 && result[0] !== 1)) {
+      throw new Error("[redis-atomic] Redis returned an invalid fenced mutation result.");
+    }
+    return result[0] === 0
+      ? { applied: false as const, reason: "lease_lost" as const }
+      : { applied: true as const, results: result.slice(1) };
+  }
+
+  async fencedStartSession(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    currentSessionKey: string,
+    currentSessionValue: string,
+    candidateSessionKey: string,
+    candidateSessionValue: unknown,
+    refetchStateKey: string
+  ) {
+    const result: unknown = await this.client.eval(
+      FENCED_START_SESSION_SCRIPT,
+      [leaseKey, currentSessionKey, candidateSessionKey, refetchStateKey],
+      [
+        expectedLeaseValue,
+        currentSessionValue,
+        serializeRedisValue(candidateSessionValue),
+      ]
+    );
+    if (result === 1) return { status: "created" as const };
+    if (result === 0) return { status: "session_exists" as const };
+    if (result === -1) return { status: "lease_lost" as const };
+    throw new Error("[redis-atomic] Redis returned an invalid session start result.");
   }
 
   pipeline(): RedisPipelineLike {

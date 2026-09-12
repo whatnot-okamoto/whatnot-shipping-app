@@ -10,9 +10,12 @@ export type DiffItem = {
 };
 
 export type DiffResult = {
+  refetch_cycle_id: string;
   has_diff: boolean;
   has_new_uninitialized: boolean;
-  new_uninitialized_count: number;
+  new_uninitialized_count: number | null;
+  first_absence_count?: number;
+  recovery_message?: string;
   has_fetch_failures?: boolean;
   failed_unique_keys?: string[];
   diff_summary: DiffItem[];
@@ -51,6 +54,8 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     has_diff,
     has_new_uninitialized,
     new_uninitialized_count,
+    first_absence_count = 0,
+    recovery_message,
     has_fetch_failures,
     failed_unique_keys = [],
     diff_summary,
@@ -61,7 +66,11 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     setIsProcessing(true);
     setError(null);
     try {
-      const res = await fetch("/api/orders/diff-confirm", { method: "POST" });
+      const res = await fetch("/api/orders/diff-confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refetch_cycle_id: diffResult.refetch_cycle_id }),
+      });
       const data = await res.json() as { success: boolean; error?: string };
       if (!data.success) {
         setError(data.error ?? "差分確認に失敗しました");
@@ -81,7 +90,11 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     setError(null);
     try {
       // POST /api/orders/init
-      const initRes = await fetch("/api/orders/init", { method: "POST" });
+      const initRes = await fetch("/api/orders/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refetch_cycle_id: diffResult.refetch_cycle_id }),
+      });
       let initData: { success: boolean; message?: string; error?: string } | null = null;
       try {
         initData = await initRes.json();
@@ -100,7 +113,11 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
       }
 
       // 初期化完了後、自動でPOST /api/orders/refetchを再実行
-      const refetchRes = await fetch("/api/orders/refetch", { method: "POST" });
+      const refetchRes = await fetch("/api/orders/refetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_refetch_cycle_id: diffResult.refetch_cycle_id }),
+      });
       const refetchData = await refetchRes.json() as RefetchApiResponse;
       if (!refetchData.success || !refetchData.diff_result) {
         setError(refetchData.error ?? "再取得に失敗しました");
@@ -131,11 +148,28 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
           </div>
         )}
 
+        {recovery_message && (
+          <p className="text-sm text-amber-800 bg-amber-50 rounded p-3">
+            {recovery_message}
+          </p>
+        )}
+
+        {first_absence_count > 0 && (
+          <p className="text-sm text-gray-700 bg-gray-50 rounded p-3">
+            BASE未対応一覧から初めて不在になった過去注文が {first_absence_count} 件あります。
+            過去注文は集約表示し、現在注文の出荷準備は継続できます。
+          </p>
+        )}
+
         {/* パターン3：未初期化注文あり */}
         {has_new_uninitialized && (
           <>
             <p className="text-sm text-amber-700 bg-amber-50 rounded p-3">
-              新しい未対応注文が <strong>{new_uninitialized_count} 件</strong> あります。
+              {new_uninitialized_count === null ? (
+                <>新しい未対応注文があります（旧状態のため件数は復元できません）。</>
+              ) : (
+                <>新しい未対応注文が <strong>{new_uninitialized_count} 件</strong> あります。</>
+              )}
               アプリへの取り込み（初期化）が必要です。
             </p>
             {error && <p className="text-xs text-red-600">{error}</p>}

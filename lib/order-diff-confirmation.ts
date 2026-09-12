@@ -1,0 +1,260 @@
+import { redis } from "@/lib/upstash";
+import {
+  buildPromotedOrderSnapshot,
+  getStaffReviewSnapshotChanges,
+} from "@/lib/order-snapshot-diff";
+import type { OrderSnapshot } from "@/lib/order-store";
+import {
+  getRefetchState,
+  setRefetchStateFenced,
+  type RefetchState,
+} from "@/lib/refetch-store";
+import { clearPdfOutputDoneFlagFenced } from "@/lib/session-store";
+import {
+  DIFF_CONFIRM_CHUNK_SIZE,
+  fencedMutate,
+  renewWorkflowLeaseIfDue,
+  type WorkflowLease,
+} from "@/lib/workflow-operation-lease";
+
+const PENDING_INDEX_KEY = "index:order_snapshot_pending";
+
+function parseRedisValue<T>(raw: unknown): T | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return JSON.parse(raw) as T;
+  return raw as T;
+}
+
+type PendingPair = {
+  uniqueKey: string;
+  snapshot: OrderSnapshot | null;
+  pending: OrderSnapshot | null;
+};
+
+async function readPendingPairs(uniqueKeys: string[]): Promise<PendingPair[]> {
+  if (uniqueKeys.length === 0) return [];
+  const pipeline = redis.pipeline();
+  for (const uniqueKey of uniqueKeys) {
+    pipeline.get(`order_snapshot:${uniqueKey}`);
+    pipeline.get(`order_snapshot_pending:${uniqueKey}`);
+  }
+  const results = await pipeline.exec();
+  return uniqueKeys.map((uniqueKey, index) => ({
+    uniqueKey,
+    snapshot: parseRedisValue<OrderSnapshot>(results[index * 2]),
+    pending: parseRedisValue<OrderSnapshot>(results[index * 2 + 1]),
+  }));
+}
+
+export type DiffRecoveryReview = {
+  refetch_cycle_id: string;
+  phase: RefetchState["phase"] | "legacy";
+  diff_confirmed_flag: boolean;
+  remaining_diff_count: number;
+  remaining_diff_summary: DiffRecoveryItem[];
+  first_absence_count: number;
+  cycle_not_in_open_orders_count: number;
+  new_uninitialized_count: number | null;
+  details_recovery: "remaining_only";
+  message: string;
+};
+
+export type DiffRecoveryItem = {
+  unique_key: string;
+  diff_type: "item_changed" | "fee_changed" | "other";
+  description: string;
+  severity: "info" | "warning";
+};
+
+function buildRemainingItem(pair: PendingPair): DiffRecoveryItem | null {
+  if (!pair.snapshot || !pair.pending) return null;
+  if (pair.pending.open_order_presence === "not_in_open_orders") return null;
+  const changes = getStaffReviewSnapshotChanges(pair.snapshot, pair.pending);
+  if (changes.itemChanged) {
+    return {
+      unique_key: pair.uniqueKey,
+      diff_type: "item_changed",
+      description: "商品内容が変更されました",
+      severity: "warning",
+    };
+  }
+  if (changes.feeChanged) {
+    return {
+      unique_key: pair.uniqueKey,
+      diff_type: "fee_changed",
+      description: "送料が変更されました",
+      severity: "info",
+    };
+  }
+  if (changes.shippingChanged) {
+    return {
+      unique_key: pair.uniqueKey,
+      diff_type: "other",
+      description: "配送情報が変更されました",
+      severity: "info",
+    };
+  }
+  return null;
+}
+
+export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null> {
+  const state = await getRefetchState();
+  if (!state?.refetch_cycle_id) return null;
+  const keys = await redis.smembers(PENDING_INDEX_KEY);
+  const pairs = await readPendingPairs(keys);
+  const firstAbsenceCount = pairs.filter(
+    ({ snapshot, pending }) =>
+      pending?.pdf_verification_cycle_id === state.refetch_cycle_id &&
+      pending?.open_order_presence === "not_in_open_orders" &&
+      snapshot?.open_order_presence !== "not_in_open_orders"
+  ).length;
+  const remainingDiffSummary = pairs.flatMap((pair) => {
+    const item = buildRemainingItem(pair);
+    return item ? [item] : [];
+  });
+  const cycleNotInOpenOrdersCount = Object.values(state.order_results ?? {}).filter(
+    (result) => result.status === "not_in_open_orders"
+  ).length;
+  const newUninitializedCount =
+    typeof state.new_uninitialized_count === "number"
+      ? state.new_uninitialized_count
+      : state.has_new_uninitialized
+        ? null
+        : 0;
+  return {
+    refetch_cycle_id: state.refetch_cycle_id,
+    phase: state.phase ?? "legacy",
+    diff_confirmed_flag: state.diff_confirmed_flag,
+    remaining_diff_count: remainingDiffSummary.length,
+    remaining_diff_summary: remainingDiffSummary,
+    first_absence_count: firstAbsenceCount,
+    cycle_not_in_open_orders_count: cycleNotInOpenOrdersCount,
+    new_uninitialized_count: newUninitializedCount,
+    details_recovery: "remaining_only",
+    message:
+      "旧処理で削除済みの差分詳細は完全復元できません。残りの差分と処理再開状態を表示しています。",
+  };
+}
+
+export type ConfirmDiffResult =
+  | { status: "confirmed"; already_complete: boolean }
+  | { status: "not_ready"; message: string }
+  | { status: "initialization_required"; message: string }
+  | { status: "cycle_mismatch"; message: string }
+  | { status: "unsafe_recovery"; message: string };
+
+function isCurrentCycle(snapshot: OrderSnapshot, cycleId: string): boolean {
+  return snapshot.pdf_verification_cycle_id === cycleId;
+}
+
+export async function confirmDiffCycle(
+  requestedCycleId: string,
+  lease: WorkflowLease
+): Promise<ConfirmDiffResult> {
+  let state = await getRefetchState();
+  if (!state || state.refetch_done_flag !== true) {
+    return { status: "not_ready", message: "再取得が完了していません。" };
+  }
+  if (!state.refetch_cycle_id || state.refetch_cycle_id !== requestedCycleId) {
+    return { status: "cycle_mismatch", message: "再取得cycleが一致しません。" };
+  }
+  if (state.has_new_uninitialized) {
+    return {
+      status: "initialization_required",
+      message: "未初期化注文があります。初期化後に再取得してください。",
+    };
+  }
+
+  let pendingKeys = await redis.smembers(PENDING_INDEX_KEY);
+  if (
+    state.phase === "confirmed" &&
+    state.diff_confirmed_flag === true &&
+    pendingKeys.length === 0
+  ) {
+    await fencedMutate(lease, []);
+    return { status: "confirmed", already_complete: true };
+  }
+  if (
+    state.phase === undefined &&
+    state.diff_confirmed_flag === true &&
+    pendingKeys.length === 0
+  ) {
+    state = { ...state, phase: "postprocessing", diff_confirmed_flag: false };
+    await setRefetchStateFenced(lease, state);
+  } else if (state.phase === "confirmed" || state.diff_confirmed_flag === true) {
+    return {
+      status: "unsafe_recovery",
+      message: "完了状態とpendingが一致しないため、自動変更を停止しました。",
+    };
+  }
+
+  if (state.phase !== "postprocessing") {
+    // Legacy route recovery: validate the entire indexed set before the first
+    // write. Any unknown/old-cycle orphan stops with zero mutations.
+    const pairs = await readPendingPairs(pendingKeys);
+    const unsafe = pairs.find(({ snapshot, pending }) => {
+      if (!pending) return !snapshot || !isCurrentCycle(snapshot, requestedCycleId);
+      if (!isCurrentCycle(pending, requestedCycleId)) return true;
+      return !snapshot;
+    });
+    if (unsafe) {
+      return {
+        status: "unsafe_recovery",
+        message: `復旧可否を安全に判定できないpendingがあります: ${unsafe.uniqueKey}`,
+      };
+    }
+
+    state = { ...state, phase: "promoting", diff_confirmed_flag: false };
+    await setRefetchStateFenced(lease, state);
+
+    for (let offset = 0; offset < pairs.length; offset += DIFF_CONFIRM_CHUNK_SIZE) {
+      await renewWorkflowLeaseIfDue(lease);
+      const chunk = pairs.slice(offset, offset + DIFF_CONFIRM_CHUNK_SIZE);
+      const mutations = [];
+      for (const { uniqueKey, snapshot, pending } of chunk) {
+        if (pending && snapshot && !isCurrentCycle(snapshot, requestedCycleId)) {
+          const promoted = buildPromotedOrderSnapshot(snapshot, pending);
+          if (promoted) {
+            mutations.push({
+              type: "set" as const,
+              key: `order_snapshot:${uniqueKey}`,
+              value: JSON.stringify(promoted),
+            });
+          }
+        }
+        if (pending) {
+          mutations.push({
+            type: "del" as const,
+            keys: [`order_snapshot_pending:${uniqueKey}`],
+          });
+        }
+      }
+      if (chunk.length > 0) {
+        mutations.push({
+          type: "srem" as const,
+          key: PENDING_INDEX_KEY,
+          members: chunk.map(({ uniqueKey }) => uniqueKey),
+        });
+      }
+      await fencedMutate(lease, mutations);
+    }
+
+    pendingKeys = await redis.smembers(PENDING_INDEX_KEY);
+    if (pendingKeys.length > 0) {
+      return {
+        status: "unsafe_recovery",
+        message: "pending処理が完了していないため後処理へ進みません。",
+      };
+    }
+    state = { ...state, phase: "postprocessing", diff_confirmed_flag: false };
+    await setRefetchStateFenced(lease, state);
+  }
+
+  await clearPdfOutputDoneFlagFenced(lease);
+  await setRefetchStateFenced(lease, {
+    ...state,
+    phase: "confirmed",
+    diff_confirmed_flag: true,
+  });
+  return { status: "confirmed", already_complete: false };
+}

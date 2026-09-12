@@ -1,5 +1,6 @@
 import type {
   RedisLike,
+  RedisMutation,
   RedisPipelineLike,
   RedisSetOptions,
 } from "./redis-like";
@@ -113,6 +114,18 @@ export class MemoryRedis implements RedisLike {
     return true;
   }
 
+  async compareAndExpire(
+    key: string,
+    expectedValue: string,
+    ttlSeconds: number
+  ): Promise<boolean> {
+    this.deleteExpiredValue(key);
+    const stored = this.values.get(key);
+    if (!stored || stored.value !== expectedValue) return false;
+    stored.expiresAt = this.now() + ttlSeconds * 1000;
+    return true;
+  }
+
   async setIfValueMatches(
     guardKey: string,
     expectedGuardValue: string,
@@ -128,6 +141,119 @@ export class MemoryRedis implements RedisLike {
       expiresAt: null,
     });
     return true;
+  }
+
+  async fencedMutate(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    mutations: RedisMutation[]
+  ) {
+    this.deleteExpiredValue(leaseKey);
+    const lease = this.values.get(leaseKey);
+    if (!lease || lease.value !== expectedLeaseValue) {
+      return { applied: false as const, reason: "lease_lost" as const };
+    }
+
+    const results: unknown[] = [];
+    for (const mutation of mutations) {
+      switch (mutation.type) {
+        case "set": {
+          this.deleteExpiredValue(mutation.key);
+          this.sets.delete(mutation.key);
+          this.values.set(mutation.key, {
+            value: structuredClone(mutation.value),
+            expiresAt: null,
+          });
+          results.push("OK");
+          break;
+        }
+        case "set_nx": {
+          this.deleteExpiredValue(mutation.key);
+          if (this.values.has(mutation.key) || this.sets.has(mutation.key)) {
+            results.push(null);
+          } else {
+            this.values.set(mutation.key, {
+              value: structuredClone(mutation.value),
+              expiresAt: null,
+            });
+            results.push("OK");
+          }
+          break;
+        }
+        case "del": {
+          let deleted = 0;
+          for (const key of mutation.keys) {
+            this.deleteExpiredValue(key);
+            if (this.values.delete(key)) deleted += 1;
+            if (this.sets.delete(key)) deleted += 1;
+          }
+          results.push(deleted);
+          break;
+        }
+        case "sadd": {
+          this.deleteExpiredValue(mutation.key);
+          if (this.values.has(mutation.key)) {
+            throw new Error("WRONGTYPE: key contains a non-set value");
+          }
+          const target = this.sets.get(mutation.key) ?? new Set<string>();
+          const before = target.size;
+          for (const member of mutation.members) target.add(String(member));
+          this.sets.set(mutation.key, target);
+          results.push(target.size - before);
+          break;
+        }
+        case "srem": {
+          const target = this.sets.get(mutation.key);
+          let removed = 0;
+          if (target) {
+            for (const member of mutation.members) {
+              if (target.delete(String(member))) removed += 1;
+            }
+            if (target.size === 0) this.sets.delete(mutation.key);
+          }
+          results.push(removed);
+          break;
+        }
+      }
+    }
+    return { applied: true as const, results };
+  }
+
+  async fencedStartSession(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    currentSessionKey: string,
+    currentSessionValue: string,
+    candidateSessionKey: string,
+    candidateSessionValue: unknown,
+    refetchStateKey: string
+  ) {
+    this.deleteExpiredValue(leaseKey);
+    const lease = this.values.get(leaseKey);
+    if (!lease || lease.value !== expectedLeaseValue) {
+      return { status: "lease_lost" as const };
+    }
+
+    this.deleteExpiredValue(currentSessionKey);
+    if (this.values.has(currentSessionKey) || this.sets.has(currentSessionKey)) {
+      return { status: "session_exists" as const };
+    }
+
+    // No await occurs between the NX decision and these writes: this is one
+    // atomic operation in the in-memory adapter, matching the Lua contract.
+    this.sets.delete(currentSessionKey);
+    this.values.set(currentSessionKey, {
+      value: currentSessionValue,
+      expiresAt: null,
+    });
+    this.sets.delete(candidateSessionKey);
+    this.values.set(candidateSessionKey, {
+      value: structuredClone(candidateSessionValue),
+      expiresAt: null,
+    });
+    this.values.delete(refetchStateKey);
+    this.sets.delete(refetchStateKey);
+    return { status: "created" as const };
   }
 
   pipeline(): RedisPipelineLike {

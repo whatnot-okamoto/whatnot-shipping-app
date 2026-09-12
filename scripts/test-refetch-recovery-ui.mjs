@@ -7,7 +7,11 @@ process.env.BASE_DATA_MODE = "mock";
 process.env.APP_STORE_MODE = "memory";
 
 const nativeAbortTimeout = AbortSignal.timeout;
-AbortSignal.timeout = () => nativeAbortTimeout(25);
+AbortSignal.timeout = () => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 25);
+  return controller.signal;
+};
 
 const baseFake = await import("./fakes/workflow-base-api.ts");
 const refetchRoute = await import("../app/api/orders/refetch/route.ts");

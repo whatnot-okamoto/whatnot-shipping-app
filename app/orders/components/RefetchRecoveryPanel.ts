@@ -45,7 +45,7 @@ export default function RefetchRecoveryPanel({
     createElement(
       "p",
       { className: "mt-1" },
-      "注文一覧と選択状態は維持されています。緊急解除は不要で、そのまま再取得できます。"
+      "注文一覧と選択状態は維持されています。そのまま再取得できます。"
     ),
     createElement(
       "button",

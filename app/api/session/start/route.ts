@@ -13,11 +13,16 @@
 //
 // C5・C6 の検証対象は「U2展開後のロック対象U1全件」。選択U1のみを検証対象にしない。
 
-import { startSession } from "@/lib/session-store";
+import { startSessionFenced } from "@/lib/session-store";
 import { getRefetchState } from "@/lib/refetch-store";
 import { getOrderSnapshots, getBundleStates, getOrderStates } from "@/lib/order-store";
 import { requireAuth } from "@/lib/auth";
 import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
+import {
+  acquireWorkflowLease,
+  releaseWorkflowLease,
+  WorkflowLeaseLostError,
+} from "@/lib/workflow-operation-lease";
 
 export async function POST(request: Request) {
   const authError = await requireAuth(request);
@@ -34,16 +39,21 @@ export async function POST(request: Request) {
     !body ||
     typeof body !== "object" ||
     !("selected_unique_keys" in body) ||
-    !Array.isArray((body as { selected_unique_keys: unknown }).selected_unique_keys)
+    !Array.isArray((body as { selected_unique_keys: unknown }).selected_unique_keys) ||
+    !("refetch_cycle_id" in body) ||
+    typeof (body as { refetch_cycle_id: unknown }).refetch_cycle_id !== "string"
   ) {
     return Response.json(
-      { error: "INVALID_BODY: selected_unique_keys must be an array" },
+      { error: "INVALID_BODY: selected_unique_keys and refetch_cycle_id are required" },
       { status: 400 }
     );
   }
 
   // order_id という変数名を使う場合、実値は unique_key（string）であることに注意（ORDER-FIELD-01読み替え）
-  const { selected_unique_keys } = body as { selected_unique_keys: string[] };
+  const { selected_unique_keys, refetch_cycle_id } = body as {
+    selected_unique_keys: string[];
+    refetch_cycle_id: string;
+  };
 
   // C1: 選択注文が1件以上存在すること
   if (selected_unique_keys.length === 0) {
@@ -53,13 +63,25 @@ export async function POST(request: Request) {
     );
   }
 
+  const lease = await acquireWorkflowLease("session-start", refetch_cycle_id);
+  if (!lease) {
+    return Response.json(
+      { error: "WORKFLOW_CONFLICT: 別の更新処理が進行中です" },
+      { status: 409 }
+    );
+  }
+
+  try {
+
   // C2・C3・C4: 再取得・差分確認が完了していない場合はセッション開始を拒否（Step 4-A3実装済み）
   const refetchState = await getRefetchState();
   if (
     !refetchState ||
     refetchState.refetch_done_flag !== true ||
     refetchState.diff_confirmed_flag !== true ||
-    refetchState.has_new_uninitialized === true
+    refetchState.has_new_uninitialized === true ||
+    refetchState.refetch_cycle_id !== refetch_cycle_id ||
+    (refetchState.phase !== undefined && refetchState.phase !== "confirmed")
   ) {
     return Response.json(
       { error: "REFETCH_REQUIRED: 再取得・差分確認を完了してからセッションを開始してください" },
@@ -158,8 +180,11 @@ export async function POST(request: Request) {
   // 残論点管理リスト: LOCK-CONDITION-01（後続保持・PICK系実装後に復帰必須）
 
   // ⑥ T5: セッション開始（U3作成・orders:refetch_state削除）
-  try {
-    const session = await startSession(locked_bundle_group_ids);
+    const session = await startSessionFenced(
+      locked_bundle_group_ids,
+      refetchState,
+      lease
+    );
     return Response.json({
       success: true,
       session,
@@ -167,8 +192,16 @@ export async function POST(request: Request) {
       expanded_unique_key_count: expandedUniqueKeys.length,
     });
   } catch (error) {
+    if (error instanceof WorkflowLeaseLostError) {
+      return Response.json(
+        { error: "WORKFLOW_LEASE_LOST: 更新権限が失効しました" },
+        { status: 409 }
+      );
+    }
     const message = error instanceof Error ? error.message : "Unknown error";
     const status = message.startsWith("SESSION_CONFLICT") ? 409 : 500;
     return Response.json({ error: message }, { status });
+  } finally {
+    await releaseWorkflowLease(lease).catch(() => false);
   }
 }

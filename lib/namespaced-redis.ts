@@ -1,5 +1,6 @@
 import type {
   RedisLike,
+  RedisMutation,
   RedisPipelineLike,
   RedisSetOptions,
 } from "./redis-like";
@@ -121,6 +122,18 @@ class GuardedRedis implements RedisLike {
     );
   }
 
+  async compareAndExpire(
+    key: string,
+    expectedValue: string,
+    ttlSeconds: number
+  ): Promise<boolean> {
+    return this.target.compareAndExpire(
+      this.policy.key(key),
+      expectedValue,
+      ttlSeconds
+    );
+  }
+
   async setIfValueMatches(
     guardKey: string,
     expectedGuardValue: string,
@@ -132,6 +145,53 @@ class GuardedRedis implements RedisLike {
       expectedGuardValue,
       this.policy.key(targetKey),
       value
+    );
+  }
+
+  async fencedMutate(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    mutations: RedisMutation[]
+  ) {
+    const mapped = mutations.map((mutation): RedisMutation => {
+      switch (mutation.type) {
+        case "set":
+        case "set_nx":
+          return { ...mutation, key: this.policy.key(mutation.key) };
+        case "del":
+          return {
+            ...mutation,
+            keys: mutation.keys.map((key) => this.policy.key(key)),
+          };
+        case "sadd":
+        case "srem":
+          return { ...mutation, key: this.policy.key(mutation.key) };
+      }
+    });
+    return this.target.fencedMutate(
+      this.policy.key(leaseKey),
+      expectedLeaseValue,
+      mapped
+    );
+  }
+
+  async fencedStartSession(
+    leaseKey: string,
+    expectedLeaseValue: string,
+    currentSessionKey: string,
+    currentSessionValue: string,
+    candidateSessionKey: string,
+    candidateSessionValue: unknown,
+    refetchStateKey: string
+  ) {
+    return this.target.fencedStartSession(
+      this.policy.key(leaseKey),
+      expectedLeaseValue,
+      this.policy.key(currentSessionKey),
+      currentSessionValue,
+      this.policy.key(candidateSessionKey),
+      candidateSessionValue,
+      this.policy.key(refetchStateKey)
     );
   }
 

@@ -136,7 +136,8 @@ try {
     );
     assert.equal(disappearedResponse.status, 200);
     const disappearedBody = await disappearedResponse.json();
-    assert.equal(disappearedBody.diff_result.diff_summary.length, 20);
+    assert.equal(disappearedBody.diff_result.diff_summary.length, 0);
+    assert.equal(disappearedBody.diff_result.first_absence_count, 20);
     assert.equal(disappearedBody.diff_result.has_fetch_failures, false);
     assert.equal(snapshotGetCount, 0);
     assert.ok(
@@ -144,8 +145,14 @@ try {
       `disappeared snapshots used ${pipelineExecCount} pipeline round trips`
     );
 
+    const rawState = await redis.get("orders:refetch_state");
+    const state = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
     const confirmResponse = await diffConfirmRoute.POST(
-      new Request("http://local.test/api/orders/diff-confirm", { method: "POST" })
+      new Request("http://local.test/api/orders/diff-confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refetch_cycle_id: state.refetch_cycle_id }),
+      })
     );
     assert.equal(confirmResponse.status, 200);
     snapshotGetCount = 0;

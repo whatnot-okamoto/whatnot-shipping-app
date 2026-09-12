@@ -9,16 +9,25 @@ import {
   getOrderSnapshot,
   getOrderSnapshots,
   buildOrderSnapshotFromDetail,
-  setOrderSnapshotPending,
-  setOrderSnapshotsPending,
-  deleteAllOrderSnapshotPending,
   type OrderSnapshot,
 } from "@/lib/order-store";
-import { resetRefetchState, setRefetchState } from "@/lib/refetch-store";
+import {
+  createInitialRefetchState,
+  getRefetchState,
+  setRefetchStateFenced,
+} from "@/lib/refetch-store";
 import type { RefetchOrderResult } from "@/lib/refetch-store";
 import { requireAuth } from "@/lib/auth";
 import { getStaffReviewSnapshotChanges } from "@/lib/order-snapshot-diff";
 import { assessOrderForPdf } from "@/lib/pdf-order-assessment";
+import {
+  acquireWorkflowLease,
+  DIFF_CONFIRM_CHUNK_SIZE,
+  fencedMutate,
+  releaseWorkflowLease,
+  renewWorkflowLeaseIfDue,
+  WorkflowLeaseLostError,
+} from "@/lib/workflow-operation-lease";
 
 export type DiffItem = {
   unique_key: string;
@@ -98,13 +107,61 @@ export async function POST(req: Request) {
   const authError = await requireAuth(req);
   if (authError) return authError;
 
+  let sourceRefetchCycleId: string | null = null;
   try {
+    const body = await req.clone().json();
+    if (
+      body &&
+      typeof body === "object" &&
+      "source_refetch_cycle_id" in body &&
+      typeof (body as { source_refetch_cycle_id?: unknown }).source_refetch_cycle_id === "string"
+    ) {
+      sourceRefetchCycleId = (body as { source_refetch_cycle_id: string }).source_refetch_cycle_id;
+    }
+  } catch {
+    // Body is optional for an ordinary refetch.
+  }
+
+  const lease = await acquireWorkflowLease("refetch", sourceRefetchCycleId);
+  if (!lease) {
+    return Response.json(
+      { success: false, error: "別の更新処理が進行中です。" },
+      { status: 409 }
+    );
+  }
+
+  try {
+    const previousState = await getRefetchState();
+    const isAuthorizedPostInitRefetch =
+      previousState?.has_new_uninitialized === true &&
+      previousState.post_init_refetch_ready === true &&
+      previousState.refetch_cycle_id === sourceRefetchCycleId;
+    const mustRejectUnconfirmedRefetch =
+      previousState?.refetch_done_flag === true &&
+      previousState.diff_confirmed_flag !== true &&
+      !isAuthorizedPostInitRefetch;
+    if (mustRejectUnconfirmedRefetch) {
+      return Response.json(
+        { success: false, error: "未確認の差分があります。先に内容を確認してください。" },
+        { status: 409 }
+      );
+    }
+
     // 手順1: refetch_stateを初期化
     const refetchCycleId = randomUUID();
-    await resetRefetchState(refetchCycleId);
+    await setRefetchStateFenced(lease, createInitialRefetchState(refetchCycleId));
 
     // 手順2: 既存のpendingを全削除
-    await deleteAllOrderSnapshotPending();
+    const oldPendingKeys = await redis.smembers("index:order_snapshot_pending");
+    await fencedMutate(lease, [
+      ...(oldPendingKeys.length > 0
+        ? [{
+            type: "del" as const,
+            keys: oldPendingKeys.map((key) => `order_snapshot_pending:${key}`),
+          }]
+        : []),
+      { type: "del", keys: ["index:order_snapshot_pending"] },
+    ]);
 
     // 手順3: BASE一覧取得 + 3条件フィルタ
     let baseOrders;
@@ -157,7 +214,9 @@ export async function POST(req: Request) {
     const orderResults: Record<string, RefetchOrderResult> = {};
     const failedUniqueKeys: string[] = [];
 
+    const pendingSnapshots = new Map<string, OrderSnapshot>();
     for (const uniqueKey of existingWithSnapshot) {
+      await renewWorkflowLeaseIfDue(lease);
       try {
         const [detail, existingSnap] = await Promise.all([
           withBaseRequestTimeout((signal) =>
@@ -173,7 +232,7 @@ export async function POST(req: Request) {
           existingSnap.bundle_group_id,
           refetchCycleId
         );
-        await setOrderSnapshotPending(uniqueKey, pending);
+        pendingSnapshots.set(uniqueKey, pending);
         orderResults[uniqueKey] = {
           status:
             assessment.generationOutcome === "eligible"
@@ -220,15 +279,12 @@ export async function POST(req: Request) {
         issues: ["not_in_open_orders"],
       };
       if (existingSnapshot?.open_order_presence !== "not_in_open_orders") {
-        diffSummary.push({
-          unique_key: key,
-          diff_type: "disappeared",
-          description: "BASE未対応一覧から削除されました（出荷済み・キャンセルの可能性）",
-          severity: "info",
-        });
+        // 初回不在は件数で集約し、現在注文の確認を埋めない。
       }
     }
-    await setOrderSnapshotsPending(disappearedPendingSnapshots);
+    for (const [key, snapshot] of disappearedPendingSnapshots) {
+      pendingSnapshots.set(key, snapshot);
+    }
 
     // 新規注文をdiff_summaryに追加
     for (const key of newOrders) {
@@ -243,13 +299,39 @@ export async function POST(req: Request) {
     const hasNewUninitialized = newOrders.length > 0;
 
     // 手順7: refetch_stateを更新
-    await setRefetchState({
+    const pendingEntries = [...pendingSnapshots.entries()];
+    for (let offset = 0; offset < pendingEntries.length; offset += DIFF_CONFIRM_CHUNK_SIZE) {
+      await renewWorkflowLeaseIfDue(lease);
+      const chunk = pendingEntries.slice(offset, offset + DIFF_CONFIRM_CHUNK_SIZE);
+      await fencedMutate(lease, [
+        ...chunk.map(([key, snapshot]) => ({
+          type: "set" as const,
+          key: `order_snapshot_pending:${key}`,
+          value: JSON.stringify(snapshot),
+        })),
+        {
+          type: "sadd" as const,
+          key: "index:order_snapshot_pending",
+          members: chunk.map(([key]) => key),
+        },
+      ]);
+    }
+
+    const firstAbsenceCount = disappeared.filter(
+      (key) =>
+        disappearedSnapshots.has(key) &&
+        disappearedSnapshots.get(key)?.open_order_presence !== "not_in_open_orders"
+    ).length;
+    await setRefetchStateFenced(lease, {
       refetch_done_flag: true,
       diff_confirmed_flag: false,
       refetched_at: new Date().toISOString(),
       has_new_uninitialized: hasNewUninitialized,
       refetch_cycle_id: refetchCycleId,
       refetch_result: failedUniqueKeys.length > 0 ? "partial" : "complete",
+      phase: hasNewUninitialized ? "awaiting_initialization" : "awaiting_review",
+      new_uninitialized_count: newOrders.length,
+      post_init_refetch_ready: false,
       order_results: orderResults,
     });
 
@@ -259,16 +341,26 @@ export async function POST(req: Request) {
       refetch_done_flag: true,
       diff_confirmed_flag: false,
       diff_result: {
-        has_diff: diffSummary.length > 0,
+        refetch_cycle_id: refetchCycleId,
+        has_diff: diffSummary.length > 0 || firstAbsenceCount > 0,
         has_new_uninitialized: hasNewUninitialized,
         new_uninitialized_count: newOrders.length,
+        first_absence_count: firstAbsenceCount,
         has_fetch_failures: failedUniqueKeys.length > 0,
         failed_unique_keys: failedUniqueKeys,
         diff_summary: diffSummary,
       },
     });
   } catch (error) {
+    if (error instanceof WorkflowLeaseLostError) {
+      return Response.json(
+        { success: false, error: "更新権限が失効しました。再読み込みしてください。" },
+        { status: 409 }
+      );
+    }
     const message = error instanceof Error ? error.message : "Unknown error";
     return Response.json({ success: false, error: message }, { status: 500 });
+  } finally {
+    await releaseWorkflowLease(lease).catch(() => false);
   }
 }

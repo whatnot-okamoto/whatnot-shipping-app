@@ -2,97 +2,67 @@
 // pending snapshotを確認・昇格し、diff_confirmed_flagをONにする。
 // has_new_uninitialized=trueの場合は拒否する（Section 0 絶対禁止事項）。
 
-import { redis } from "@/lib/upstash";
-import {
-  getOrderSnapshotPending,
-  getOrderSnapshot,
-  deleteOrderSnapshotPending,
-  getAllPendingUniqueKeys,
-} from "@/lib/order-store";
-import { getRefetchState, setRefetchState } from "@/lib/refetch-store";
-import { clearPdfOutputDoneFlag } from "@/lib/session-store";
 import { requireAuth } from "@/lib/auth";
-import { buildPromotedOrderSnapshot } from "@/lib/order-snapshot-diff";
+import {
+  confirmDiffCycle,
+  getDiffRecoveryReview,
+} from "@/lib/order-diff-confirmation";
+import {
+  acquireWorkflowLease,
+  releaseWorkflowLease,
+  WorkflowLeaseLostError,
+} from "@/lib/workflow-operation-lease";
+
+export async function GET(req: Request) {
+  const authError = await requireAuth(req);
+  if (authError) return authError;
+  const review = await getDiffRecoveryReview();
+  if (!review) {
+    return Response.json({ success: false, error: "再取得状態がありません。" }, { status: 404 });
+  }
+  return Response.json({ success: true, review });
+}
 
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
   if (authError) return authError;
 
+  let body: unknown;
   try {
-    // 手順1: refetch_state確認
-    const refetchState = await getRefetchState();
+    body = await req.json();
+  } catch {
+    return Response.json({ success: false, error: "再読み込みしてから確認してください。" }, { status: 400 });
+  }
+  const refetchCycleId =
+    body && typeof body === "object" && "refetch_cycle_id" in body
+      ? (body as { refetch_cycle_id?: unknown }).refetch_cycle_id
+      : null;
+  if (typeof refetchCycleId !== "string" || !refetchCycleId) {
+    return Response.json({ success: false, error: "再読み込みしてから確認してください。" }, { status: 400 });
+  }
 
-    if (!refetchState || refetchState.refetch_done_flag !== true) {
-      return Response.json(
-        { success: false, error: "再取得が完了していません。先に再取得を実行してください" },
-        { status: 400 }
-      );
+  const lease = await acquireWorkflowLease("diff-confirm", refetchCycleId);
+  if (!lease) {
+    return Response.json({ success: false, error: "別の更新処理が進行中です。" }, { status: 409 });
+  }
+  try {
+    const result = await confirmDiffCycle(refetchCycleId, lease);
+    if (result.status === "confirmed") {
+      return Response.json({
+        success: true,
+        diff_confirmed_flag: true,
+        already_complete: result.already_complete,
+      });
     }
-
-    if (refetchState.has_new_uninitialized === true) {
-      return Response.json(
-        {
-          success: false,
-          error: "未初期化注文があります。初期化を実行してから再取得してください",
-        },
-        { status: 409 }
-      );
-    }
-
-    // 手順2: pending対象unique_key全件取得
-    const pendingKeys = await getAllPendingUniqueKeys();
-
-    // 手順3: 業務差分あり、またはordered_timestamp補完対象のpendingをsnapshotへ昇格
-    // 時刻補完はスタッフ向け差分には追加せず、差分確認完了後の安全なschema補完として扱う。
-    for (const uniqueKey of pendingKeys) {
-      const [existing, pending] = await Promise.all([
-        getOrderSnapshot(uniqueKey),
-        getOrderSnapshotPending(uniqueKey),
-      ]);
-
-      if (!pending) {
-        // pending消失（稀）: Setのみクリーンアップ
-        await redis.srem("index:order_snapshot_pending", uniqueKey);
-        continue;
-      }
-
-      const promoted = existing
-        ? buildPromotedOrderSnapshot(existing, pending)
-        : null;
-
-      if (promoted) {
-        // 業務差分あり、または時刻補完対象 → order_snapshot:{unique_key} に昇格（上書き）
-        // pending時刻が無効な場合は既存の正常値を維持し、無効値を正常時刻として保存しない。
-        // Section 0: 差分確認完了後のみ order_snapshot を上書き可
-        await redis.set(`order_snapshot:${uniqueKey}`, JSON.stringify(promoted));
-      }
-      // 昇格対象外・またはexisting未存在 → snapshotは変更しない
-
-      await deleteOrderSnapshotPending(uniqueKey);
-    }
-
-    // 手順4: diff_confirmed_flagをtrueに更新
-    await setRefetchState({
-      ...refetchState,
-      diff_confirmed_flag: true,
-    });
-
-    try {
-      await clearPdfOutputDoneFlag();
-    } catch (e) {
-      console.error("[diff-confirm] clearPdfOutputDoneFlag failed:", e instanceof Error ? e.message : String(e));
-      return Response.json(
-        {
-          success: false,
-          error: "変更は保存されましたが、PDF出力状態の更新に失敗しました。画面を再読み込みして状態を確認してください。",
-        },
-        { status: 500 }
-      );
-    }
-
-    return Response.json({ success: true, diff_confirmed_flag: true });
+    const status = result.status === "not_ready" ? 400 : 409;
+    return Response.json({ success: false, error: result.message }, { status });
   } catch (error) {
+    if (error instanceof WorkflowLeaseLostError) {
+      return Response.json({ success: false, error: "更新権限が失効しました。再読み込みしてください。" }, { status: 409 });
+    }
     const message = error instanceof Error ? error.message : "Unknown error";
     return Response.json({ success: false, error: message }, { status: 500 });
+  } finally {
+    await releaseWorkflowLease(lease).catch(() => false);
   }
 }

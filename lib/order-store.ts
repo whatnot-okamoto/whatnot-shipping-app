@@ -21,6 +21,14 @@ import {
   type CarrierCategory,
   type Carrier,
 } from "@/lib/carrier-mapping";
+import type { RedisMutation } from "@/lib/redis-like";
+import {
+  DIFF_CONFIRM_CHUNK_SIZE,
+  fencedMutate,
+  renewWorkflowLeaseIfDue,
+  WorkflowLeaseLostError,
+  type WorkflowLease,
+} from "@/lib/workflow-operation-lease";
 
 // ============================================================================
 // Upstash 保存型定義（DATA-01 §2 保存対象の定義 準拠）
@@ -123,10 +131,14 @@ export type InitializeResult = {
  * shipping_lines.length !== 1 の注文は category="unknown" として扱う。
  */
 export async function initializeOrderData(
-  orders: BaseOrder[]
+  orders: BaseOrder[],
+  lease?: WorkflowLease
 ): Promise<InitializeResult> {
   const bundles = groupOrdersIntoU2Bundles(orders);
-  const pipe = redis.pipeline();
+  const mutations: RedisMutation[] = [];
+  const enqueueSetNx = (key: string, value: unknown) => {
+    mutations.push({ type: "set_nx", key, value });
+  };
   const unknownMethodOrders: InitializeResult["unknownMethodOrders"] = [];
 
   for (const [bundleGroupId, bundleOrders] of bundles) {
@@ -141,7 +153,7 @@ export async function initializeOrderData(
       representative_order_unique_key: orderUniqueKeys[0],  // 辞書順最小が代表（DATA-01 U2）
       tracking_number: "",
     };
-    pipe.set(`bundle:${bundleGroupId}`, JSON.stringify(u2), { nx: true });
+    enqueueSetNx(`bundle:${bundleGroupId}`, JSON.stringify(u2));
 
     for (const order of bundleOrders) {
       // shipping_lines.length === 1 のときのみ分類。0 または >1 は unknown 扱い。
@@ -172,7 +184,7 @@ export async function initializeOrderData(
 
       // --- Snapshot（ORDER-SNAPSHOT-01）---
       const snapshot = buildOrderSnapshot(order, bundleGroupId, category);
-      pipe.set(`order_snapshot:${order.unique_key}`, JSON.stringify(snapshot), { nx: true });
+      enqueueSetNx(`order_snapshot:${order.unique_key}`, JSON.stringify(snapshot));
 
       // --- U1 ---
       const u1: U1Data = {
@@ -186,7 +198,7 @@ export async function initializeOrderData(
         app_memo: "",
         cancelled_flag: false,
       };
-      pipe.set(`order:${order.unique_key}`, JSON.stringify(u1), { nx: true });
+      enqueueSetNx(`order:${order.unique_key}`, JSON.stringify(u1));
 
       // --- U4 + インデックスキー ---
       const itemIds: number[] = [];
@@ -198,16 +210,32 @@ export async function initializeOrderData(
           required_quantity: item.amount,
           scanned_quantity: 0,
         };
-        pipe.set(`picking:${item.order_item_id}`, JSON.stringify(u4), { nx: true });
+        enqueueSetNx(`picking:${item.order_item_id}`, JSON.stringify(u4));
         itemIds.push(item.order_item_id);
       }
       // index:picking:{unique_key}: 注文単位で U4 を引くためのインデックス（DATA-01 §5）
-      pipe.set(`index:picking:${order.unique_key}`, JSON.stringify(itemIds), { nx: true });
+      enqueueSetNx(`index:picking:${order.unique_key}`, JSON.stringify(itemIds));
     }
   }
 
   // U1・U2・U4・snapshot・インデックスキーを一括送信（整合ルール DATA-01 §5）
-  await pipe.exec();
+  if (lease) {
+    for (let offset = 0; offset < mutations.length; offset += DIFF_CONFIRM_CHUNK_SIZE) {
+      await renewWorkflowLeaseIfDue(lease);
+      await fencedMutate(
+        lease,
+        mutations.slice(offset, offset + DIFF_CONFIRM_CHUNK_SIZE)
+      );
+    }
+  } else {
+    const pipe = redis.pipeline();
+    for (const mutation of mutations) {
+      if (mutation.type === "set_nx") {
+        pipe.set(mutation.key, mutation.value, { nx: true });
+      }
+    }
+    await pipe.exec();
+  }
 
   // index:orders への unique_key 登録（Set形式。pipeline 外で実行し失敗を明示的に捕捉する）
   const allUniqueKeys = orders.map((o) => o.unique_key);
@@ -215,11 +243,19 @@ export async function initializeOrderData(
   let indexOrdersFailed = false;
   if (allUniqueKeys.length > 0) {
     try {
-      indexOrdersAdded = await redis.sadd(
-        "index:orders",
-        ...(allUniqueKeys as [string, ...string[]])
-      );
-    } catch {
+      if (lease) {
+        const results = await fencedMutate(lease, [
+          { type: "sadd", key: "index:orders", members: allUniqueKeys },
+        ]);
+        indexOrdersAdded = Number(results[0] ?? 0);
+      } else {
+        indexOrdersAdded = await redis.sadd(
+          "index:orders",
+          ...(allUniqueKeys as [string, ...string[]])
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkflowLeaseLostError) throw error;
       indexOrdersFailed = true;
     }
   }

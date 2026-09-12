@@ -11,6 +11,10 @@ const failedKeys = new Set<string>();
 const stalledKeys = new Set<string>();
 let fetchFailureMessage = "fixture fetch failure";
 let orderListStalls = false;
+let orderListCalls = 0;
+let orderListGate:
+  | { entered: () => void; wait: Promise<void> }
+  | null = null;
 
 function waitForAbort<T>(signal?: AbortSignal): Promise<T> {
   return new Promise<T>((_, reject) => {
@@ -31,6 +35,28 @@ export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   stalledKeys.clear();
   fetchFailureMessage = "fixture fetch failure";
   orderListStalls = false;
+  orderListCalls = 0;
+  orderListGate = null;
+}
+
+export function installWorkflowOrderListGate(): {
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  orderListGate = { entered: markEntered, wait };
+  return { entered, release };
+}
+
+export function getWorkflowOrderListCallCount(): number {
+  return orderListCalls;
 }
 
 export function setWorkflowOrderListStall(shouldStall: boolean): void {
@@ -54,6 +80,13 @@ export function setWorkflowFetchFailureMessage(message: string): void {
 export async function fetchOrderedOrders(options?: {
   signal?: AbortSignal;
 }): Promise<BaseOrderSummary[]> {
+  orderListCalls += 1;
+  if (orderListGate) {
+    const gate = orderListGate;
+    orderListGate = null;
+    gate.entered();
+    await gate.wait;
+  }
   if (orderListStalls) {
     return waitForAbort(options?.signal);
   }

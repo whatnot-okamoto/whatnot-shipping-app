@@ -27,6 +27,7 @@ type SessionInfo = {
   locked_bundle_group_ids: string[];
   refetch_done_flag: boolean;
   diff_confirmed_flag: boolean;
+  refetch_cycle_id?: string;
   pdf_output_done_flag?: boolean;
   csv_status?: CsvStatusMap;
 };
@@ -52,6 +53,18 @@ type RefetchApiResponse = {
   diff_result?: DiffResult;
   error_type?: string;
   error?: string;
+};
+
+type DiffRecoveryApiResponse = {
+  success: boolean;
+  review?: {
+    refetch_cycle_id: string;
+    remaining_diff_count: number;
+    remaining_diff_summary: DiffResult["diff_summary"];
+    first_absence_count: number;
+    new_uninitialized_count: number | null;
+    message: string;
+  };
 };
 
 type SessionCurrentApiResponse = {
@@ -161,6 +174,25 @@ export default function OrdersPage() {
     setOrders(data.orders);
     setSession(data.session);
     setMeta(data.meta);
+    if (data.session.refetch_done_flag && !data.session.diff_confirmed_flag) {
+      const recoveryResponse = await fetch("/api/orders/diff-confirm");
+      const recovery = (await recoveryResponse.json()) as DiffRecoveryApiResponse;
+      if (recovery.success && recovery.review) {
+        const review = recovery.review;
+        setDiffResult({
+          refetch_cycle_id: review.refetch_cycle_id,
+          has_diff:
+            review.remaining_diff_count > 0 || review.first_absence_count > 0,
+          has_new_uninitialized:
+            review.new_uninitialized_count === null ||
+            review.new_uninitialized_count > 0,
+          new_uninitialized_count: review.new_uninitialized_count,
+          first_absence_count: review.first_absence_count,
+          recovery_message: review.message,
+          diff_summary: review.remaining_diff_summary,
+        });
+      }
+    }
   }, []);
 
   // セッション状態を取得（BASE APIを叩かない。active時は locked_bundles も取得）
@@ -315,7 +347,10 @@ export default function OrdersPage() {
       const res = await fetch("/api/session/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selected_unique_keys: [...selectedKeys] }),
+        body: JSON.stringify({
+          selected_unique_keys: [...selectedKeys],
+          refetch_cycle_id: session.refetch_cycle_id,
+        }),
       });
       const data = (await res.json()) as SessionStartApiResponse;
       if (!res.ok || !data.success) {

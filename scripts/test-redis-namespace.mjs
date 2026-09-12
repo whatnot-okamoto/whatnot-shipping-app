@@ -75,6 +75,51 @@ assert.equal(
   true
 );
 
+await development.set("lease", "owner-a");
+const fencedResult = await development.fencedMutate("lease", "owner-a", [
+  { type: "set", key: "typed:set", value: "set" },
+  { type: "set_nx", key: "typed:set-nx", value: "nx" },
+  { type: "sadd", key: "typed:set-members", members: ["a", "b"] },
+  { type: "srem", key: "typed:set-members", members: ["a"] },
+  { type: "del", keys: ["typed:set"] },
+]);
+assert.equal(fencedResult.applied, true);
+assert.equal(
+  await raw.get(`${DEVELOPMENT_REDIS_NAMESPACE}typed:set-nx`),
+  "nx"
+);
+assert.deepEqual(
+  await raw.smembers(`${DEVELOPMENT_REDIS_NAMESPACE}typed:set-members`),
+  ["b"]
+);
+await assert.rejects(
+  development.fencedMutate("lease", "owner-a", [
+    { type: "set", key: `${DEVELOPMENT_REDIS_NAMESPACE}blocked`, value: "x" },
+  ]),
+  /reserved Development Redis prefix/
+);
+
+const existingRefetchState = { keep: true };
+await development.set("orders:refetch_state", existingRefetchState);
+const sessionStart = await development.fencedStartSession(
+  "lease",
+  "owner-a",
+  "session:current",
+  "session-new",
+  "session:session-new",
+  { active: true },
+  "orders:refetch_state"
+);
+assert.deepEqual(sessionStart, { status: "created" });
+assert.equal(
+  await raw.get(`${DEVELOPMENT_REDIS_NAMESPACE}session:current`),
+  "session-new"
+);
+assert.equal(
+  await raw.get(`${DEVELOPMENT_REDIS_NAMESPACE}orders:refetch_state`),
+  null
+);
+
 class AtomicSpyRedis extends MemoryRedis {
   atomicCalls = [];
 

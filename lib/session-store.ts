@@ -9,7 +9,16 @@
 //   未設定 = activeなセッションなし（DATA-01 §5 session:currentポインタ構造）
 
 import { redis } from "@/lib/upstash";
-import { getRefetchState, deleteRefetchState } from "@/lib/refetch-store";
+import {
+  REFETCH_STATE_KEY,
+  type RefetchState,
+} from "@/lib/refetch-store";
+import {
+  WORKFLOW_LEASE_KEY,
+  WorkflowLeaseLostError,
+  fencedMutate,
+  type WorkflowLease,
+} from "@/lib/workflow-operation-lease";
 
 // ============================================================================
 // 型定義
@@ -65,54 +74,39 @@ export type U3Data = {
 // ============================================================================
 
 /**
- * セッションを開始し、注文集合をロックする。
- *
- * 実装順序（DATA-01 §5 セッション開始の順序・逆転禁止）:
- *   1. session_id を UUID で生成する
- *   2. `session:{session_id}` に完成した JSON を一括書き込む
- *      （locked_bundle_group_ids 確定 + session_status=active を同時に確定する）
- *   3. `SET session:current NX` で session_id を書き込む
- *      - NX: 存在しない場合のみ成功。並行セッション開始を構造的に排除する。
- *      - 失敗時: `session:{session_id}` を削除して中途半端な状態を残さずエラーを返す
- *
- * @param lockedBundleGroupIds ロックする bundle_group_id の集合
+ * lease ownerの一致とsession:current NXを先に確認する専用atomic処理。
+ * NX不成立時は候補session本体とrefetch stateへ一切書き込まない。
  */
-export async function startSession(
-  lockedBundleGroupIds: string[]
+export async function startSessionFenced(
+  lockedBundleGroupIds: string[],
+  refetchState: RefetchState,
+  lease: WorkflowLease
 ): Promise<U3Data> {
-  // T5：orders:refetch_stateのフラグをU3へコピーする
-  const refetchState = await getRefetchState();
-  const refetchDoneFlag = refetchState?.refetch_done_flag ?? false;
-  const diffConfirmedFlag = refetchState?.diff_confirmed_flag ?? false;
-
   const sessionId = crypto.randomUUID();
-
-  // locked_bundle_group_ids・session_status=active・引き継ぎフラグを含む完成データを一括書き込む
-  // session:current より先に書くことで、ポインタが先行するケースを排除する
   const sessionData: U3Data = {
     session_id: sessionId,
     session_status: "active",
     locked_bundle_group_ids: lockedBundleGroupIds,
-    refetch_done_flag: refetchDoneFlag,
-    diff_confirmed_flag: diffConfirmedFlag,
+    refetch_done_flag: refetchState.refetch_done_flag,
+    diff_confirmed_flag: refetchState.diff_confirmed_flag,
     checklist_printed_flag: false,
     pdf_output_done_flag: false,
     csv_status: { ...CSV_STATUS_INITIAL },
     emergency_unlock_log: [],
   };
-  await redis.set(`session:${sessionId}`, JSON.stringify(sessionData));
-
-  // session:current に NX で書き込む（二重生成防止）
-  const setResult = await redis.set("session:current", sessionId, { nx: true });
-
-  if (setResult === null) {
-    await redis.del(`session:${sessionId}`);
+  const result = await redis.fencedStartSession(
+    WORKFLOW_LEASE_KEY,
+    lease.serialized,
+    "session:current",
+    sessionId,
+    `session:${sessionId}`,
+    JSON.stringify(sessionData),
+    REFETCH_STATE_KEY
+  );
+  if (result.status === "lease_lost") throw new WorkflowLeaseLostError();
+  if (result.status === "session_exists") {
     throw new Error("SESSION_CONFLICT: An active session already exists");
   }
-
-  // session_status=active 確定後に orders:refetch_state を削除（T5完了）
-  await deleteRefetchState();
-
   return sessionData;
 }
 
@@ -270,4 +264,32 @@ export async function clearPdfOutputDoneFlag(): Promise<void> {
   // applyPdfOutputDoneFlagOff は pdf_output_done_flag=false + csv_status リセットを適用する
   const updated = applyPdfOutputDoneFlagOff(session);
   await redis.set(`session:${sessionId}`, JSON.stringify(updated));
+}
+
+export async function clearPdfOutputDoneFlagFenced(
+  lease: WorkflowLease
+): Promise<void> {
+  const sessionId = await redis.get<string>("session:current");
+  if (!sessionId) {
+    await fencedMutate(lease, []);
+    return;
+  }
+
+  const raw = await redis.get<string>(`session:${sessionId}`);
+  if (!raw) {
+    await fencedMutate(lease, []);
+    return;
+  }
+
+  const session: U3Data =
+    typeof raw === "string" ? JSON.parse(raw) : (raw as U3Data);
+  if (session.session_status !== "active") {
+    await fencedMutate(lease, []);
+    return;
+  }
+
+  const updated = applyPdfOutputDoneFlagOff(session);
+  await fencedMutate(lease, [
+    { type: "set", key: `session:${sessionId}`, value: JSON.stringify(updated) },
+  ]);
 }

@@ -36,6 +36,15 @@ function makeOrder(uniqueKey, address, itemId) {
 }
 
 async function post(route, path, body) {
+  const rawState = await redis.get("orders:refetch_state");
+  const state =
+    typeof rawState === "string" ? JSON.parse(rawState) : rawState;
+  if (path === "/api/orders/diff-confirm" && body === undefined) {
+    body = { refetch_cycle_id: state?.refetch_cycle_id };
+  }
+  if (path === "/api/session/start" && body && !body.refetch_cycle_id) {
+    body = { ...body, refetch_cycle_id: state?.refetch_cycle_id };
+  }
   return route.POST(
     new Request(`http://local.test${path}`, {
       method: "POST",
@@ -212,5 +221,27 @@ assert.equal(
   (await repeatedDisappearedStart.json()).blocked_orders[0].reason,
   "not_in_open_orders"
 );
+
+// 初回大量不在は集約し、BASEに現在存在する確認済み注文の業務継続を止めない。
+await clearMemoryRedis();
+const currentOrder = makeOrder("TEST-CURRENT-CONTINUES", "現在町6-6", 501);
+const historicalOrder = makeOrder("TEST-HISTORICAL-ABSENT", "過去町7-7", 502);
+await initializeOrderData([currentOrder, historicalOrder]);
+baseFake.setWorkflowBaseOrders([currentOrder]);
+baseFake.setWorkflowFetchFailures([]);
+const aggregateResponse = await post(refetchRoute, "/api/orders/refetch");
+const aggregateBody = await aggregateResponse.json();
+assert.equal(aggregateBody.diff_result.first_absence_count, 1);
+assert.equal(
+  aggregateBody.diff_result.diff_summary.some(
+    (item) => item.unique_key === historicalOrder.unique_key
+  ),
+  false
+);
+assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
+const continuingSession = await post(sessionStartRoute, "/api/session/start", {
+  selected_unique_keys: [currentOrder.unique_key],
+});
+assert.equal(continuingSession.status, 200);
 
 console.log("order workflow route tests passed");

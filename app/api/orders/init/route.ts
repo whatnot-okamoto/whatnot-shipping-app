@@ -8,12 +8,52 @@ import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
 import { initializeOrderData } from "@/lib/order-store";
 import type { BaseOrder } from "@/lib/base-api";
 import { requireAuth } from "@/lib/auth";
+import { getRefetchState, setRefetchStateFenced } from "@/lib/refetch-store";
+import {
+  acquireWorkflowLease,
+  releaseWorkflowLease,
+  renewWorkflowLeaseIfDue,
+  WorkflowLeaseLostError,
+} from "@/lib/workflow-operation-lease";
 
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
   if (authError) return authError;
 
+  let requestedCycleId: string | null = null;
   try {
+    const body = await req.clone().json();
+    if (
+      body &&
+      typeof body === "object" &&
+      "refetch_cycle_id" in body &&
+      typeof (body as { refetch_cycle_id?: unknown }).refetch_cycle_id === "string"
+    ) {
+      requestedCycleId = (body as { refetch_cycle_id: string }).refetch_cycle_id;
+    }
+  } catch {
+    // Initial bootstrap remains body-less; recovery init carries a cycle id.
+  }
+
+  const lease = await acquireWorkflowLease("init", requestedCycleId);
+  if (!lease) {
+    return Response.json(
+      { success: false, message: "別の更新処理が進行中です。" },
+      { status: 409 }
+    );
+  }
+
+  try {
+    const refetchState = await getRefetchState();
+    if (
+      refetchState?.has_new_uninitialized === true &&
+      (!requestedCycleId || requestedCycleId !== refetchState.refetch_cycle_id)
+    ) {
+      return Response.json(
+        { success: false, message: "再取得cycleが一致しません。画面を再読み込みしてください。" },
+        { status: 409 }
+      );
+    }
     // 手順1: 注文一覧取得（サマリのみ）
     const summaries = await fetchOrderedOrders();
 
@@ -23,6 +63,7 @@ export async function POST(req: Request) {
     const warnings: string[] = [];
 
     for (const summary of summaries) {
+      await renewWorkflowLeaseIfDue(lease);
       try {
         const detail = await fetchOrderDetail(summary.unique_key);
 
@@ -46,7 +87,7 @@ export async function POST(req: Request) {
     }
 
     // 手順3: 詳細取得に成功した注文を Upstash に初期化
-    const result = await initializeOrderData(details);
+    const result = await initializeOrderData(details, lease);
 
     // unknownMethodOrders を warnings に追記
     for (const unknown of result.unknownMethodOrders) {
@@ -64,6 +105,14 @@ export async function POST(req: Request) {
     const hasIndexFailure = result.indexOrdersFailed;
 
     if (failedUniqueKeys.length === 0 && !hasIndexFailure) {
+      if (refetchState?.has_new_uninitialized === true) {
+        await setRefetchStateFenced(lease, {
+          ...refetchState,
+          post_init_refetch_ready: true,
+          phase: "awaiting_initialization",
+          diff_confirmed_flag: false,
+        });
+      }
       return Response.json({
         success: true,
         status: "completed",
@@ -100,10 +149,18 @@ export async function POST(req: Request) {
       indexOrdersAdded: result.indexOrdersAdded,
     });
   } catch (err) {
+    if (err instanceof WorkflowLeaseLostError) {
+      return Response.json(
+        { success: false, message: "更新権限が失効しました。再読み込みしてください。" },
+        { status: 409 }
+      );
+    }
     console.error("[orders/init] 予期しないエラー:", err);
     return Response.json(
       { success: false, message: "初期化に失敗しました。時間をおいて再実行してください。" },
       { status: 500 }
     );
+  } finally {
+    await releaseWorkflowLease(lease).catch(() => false);
   }
 }

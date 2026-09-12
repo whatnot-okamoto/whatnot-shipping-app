@@ -25,6 +25,8 @@
     "test:session-start-recovery-ui": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/test-session-start-recovery-ui.mjs",
     "test:order-workflow-routes": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-order-workflow-routes.mjs",
     "test:refetch-timeout-recovery": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-refetch-timeout-recovery.mjs",
+    "test:diff-confirm-recovery": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-diff-confirm-recovery.mjs",
+    "test:workflow-operation-fencing": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-workflow-operation-fencing.mjs",
     "test:refetch-recovery-ui": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-refetch-recovery-ui.mjs",
     "test:pdf-receipt-workflow-routes": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-pdf-receipt-workflow-routes.mjs",
     "verify:partial-cancel-pdf": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/typescript-test-loader.mjs scripts/render-partial-cancel-verification.mjs",
