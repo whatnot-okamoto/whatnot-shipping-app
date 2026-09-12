@@ -5,6 +5,7 @@ import {
   shouldShowDiffConfirmAction,
   type DiffRecoveryStatus,
 } from "./diff-confirm-view-policy";
+import DiffAbsenceSummary from "./DiffAbsenceSummary";
 
 export type DiffItem = {
   unique_key: string;
@@ -19,6 +20,7 @@ export type DiffResult = {
   has_new_uninitialized: boolean;
   new_uninitialized_count: number | null;
   first_absence_count?: number;
+  cycle_not_in_open_orders_count?: number;
   recovery_message?: string;
   recovery_status?: DiffRecoveryStatus;
   can_confirm?: boolean;
@@ -61,6 +63,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     has_new_uninitialized,
     new_uninitialized_count,
     first_absence_count = 0,
+    cycle_not_in_open_orders_count = 0,
     recovery_message,
     has_fetch_failures,
     failed_unique_keys = [],
@@ -161,12 +164,10 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
           </p>
         )}
 
-        {first_absence_count > 0 && (
-          <p className="text-sm text-gray-700 bg-gray-50 rounded p-3">
-            BASE未対応一覧から初めて不在になった過去注文が {first_absence_count} 件あります。
-            過去注文は集約表示し、現在注文の出荷準備は継続できます。
-          </p>
-        )}
+        <DiffAbsenceSummary
+          firstAbsenceCount={first_absence_count}
+          cycleNotInOpenOrdersCount={cycle_not_in_open_orders_count}
+        />
 
         {/* パターン3：未初期化注文あり */}
         {has_new_uninitialized && (

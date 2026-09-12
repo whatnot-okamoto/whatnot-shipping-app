@@ -1,7 +1,8 @@
 export type DiffRecoveryStatus =
   | "fresh"
   | "resuming_partial"
-  | "conflict";
+  | "conflict"
+  | "confirmed";
 
 export function shouldShowDiffConfirmAction(input: {
   can_confirm?: boolean;

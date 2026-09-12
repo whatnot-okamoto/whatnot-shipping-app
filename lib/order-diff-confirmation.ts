@@ -7,6 +7,7 @@ import type { OrderSnapshot } from "@/lib/order-store";
 import {
   getRefetchState,
   setRefetchStateFenced,
+  type RefetchOrderResult,
   type RefetchState,
 } from "@/lib/refetch-store";
 import { clearPdfOutputDoneFlagFenced } from "@/lib/session-store";
@@ -29,10 +30,19 @@ type PendingPair = {
   uniqueKey: string;
   snapshot: OrderSnapshot | null;
   pending: OrderSnapshot | null;
+  indexed: boolean;
+  orderResultStatus: RefetchOrderResult["status"] | null;
 };
 
-async function readPendingPairs(uniqueKeys: string[]): Promise<PendingPair[]> {
+async function readPendingPairs(
+  uniqueKeys: string[],
+  options?: {
+    indexedKeys?: Set<string>;
+    orderResults?: RefetchState["order_results"];
+  }
+): Promise<PendingPair[]> {
   if (uniqueKeys.length === 0) return [];
+  const indexedKeys = options?.indexedKeys ?? new Set(uniqueKeys);
   const pipeline = redis.pipeline();
   for (const uniqueKey of uniqueKeys) {
     pipeline.get(`order_snapshot:${uniqueKey}`);
@@ -43,13 +53,29 @@ async function readPendingPairs(uniqueKeys: string[]): Promise<PendingPair[]> {
     uniqueKey,
     snapshot: parseRedisValue<OrderSnapshot>(results[index * 2]),
     pending: parseRedisValue<OrderSnapshot>(results[index * 2 + 1]),
+    indexed: indexedKeys.has(uniqueKey),
+    orderResultStatus: options?.orderResults?.[uniqueKey]?.status ?? null,
   }));
+}
+
+async function readRecoveryPairs(
+  indexedKeys: string[],
+  state: RefetchState
+): Promise<PendingPair[]> {
+  const successfulResultKeys = Object.entries(state.order_results ?? {}).flatMap(
+    ([uniqueKey, result]) => result.status === "fetch_failed" ? [] : [uniqueKey]
+  );
+  const uniqueKeys = [...new Set([...indexedKeys, ...successfulResultKeys])];
+  return readPendingPairs(uniqueKeys, {
+    indexedKeys: new Set(indexedKeys),
+    orderResults: state.order_results,
+  });
 }
 
 export type DiffRecoveryReview = {
   refetch_cycle_id: string;
   phase: RefetchState["phase"] | "legacy";
-  review_status: "fresh" | "resuming_partial" | "conflict";
+  review_status: "fresh" | "resuming_partial" | "conflict" | "confirmed";
   can_confirm: boolean;
   processed_details_fully_recoverable: boolean;
   diff_confirmed_flag: boolean;
@@ -75,6 +101,7 @@ function buildRemainingItem(
   pair: PendingPair,
   cycleId: string
 ): DiffRecoveryItem | null {
+  if (!pair.indexed) return null;
   if (!pair.snapshot || !pair.pending) return null;
   if (pair.pending.pdf_verification_cycle_id !== cycleId) return null;
   if (pair.pending.open_order_presence === "not_in_open_orders") return null;
@@ -121,18 +148,41 @@ function classifyRecoveryState(
   const cycleId = state.refetch_cycle_id;
   const hasUnsafePair =
     !cycleId ||
-    pairs.some(({ snapshot, pending }) => {
+    pairs.some(({ snapshot, pending, indexed, orderResultStatus }) => {
       if (!pending) {
-        return !snapshot || snapshot.pdf_verification_cycle_id !== cycleId;
+        if (!snapshot) {
+          return indexed || orderResultStatus !== "not_in_open_orders";
+        }
+        return snapshot.pdf_verification_cycle_id !== cycleId;
       }
       return (
-        pending.pdf_verification_cycle_id !== cycleId || snapshot === null
+        !indexed ||
+        pending.pdf_verification_cycle_id !== cycleId ||
+        snapshot === null
       );
     });
+  const hasPendingWork = pairs.some(
+    ({ pending, indexed }) => pending !== null || indexed
+  );
+  const isConfirmedComplete =
+    state.phase === "confirmed" &&
+    state.diff_confirmed_flag === true &&
+    !hasPendingWork;
+
+  if (!hasUnsafePair && isConfirmedComplete) {
+    return {
+      reviewStatus: "confirmed",
+      canConfirm: false,
+      processedDetailsFullyRecoverable: false,
+      detailsRecovery: "none",
+      message: "今回の差分確認は完了しています。",
+    };
+  }
+
   const phaseContradiction =
-    (state.phase === "postprocessing" && pairs.length > 0) ||
+    (state.phase === "postprocessing" && hasPendingWork) ||
     state.phase === "confirmed" ||
-    (state.diff_confirmed_flag === true && pairs.length > 0) ||
+    (state.diff_confirmed_flag === true && state.phase !== undefined) ||
     state.refetch_done_flag !== true;
 
   if (hasUnsafePair || phaseContradiction) {
@@ -180,7 +230,7 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
   const state = await getRefetchState();
   if (!state?.refetch_cycle_id) return null;
   const keys = await redis.smembers(PENDING_INDEX_KEY);
-  const pairs = await readPendingPairs(keys);
+  const pairs = await readRecoveryPairs(keys, state);
   const classification = classifyRecoveryState(state, pairs);
   const firstAbsenceCount =
     typeof state.first_absence_count === "number"

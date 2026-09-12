@@ -352,6 +352,7 @@ export async function POST(req: Request) {
         has_new_uninitialized: hasNewUninitialized,
         new_uninitialized_count: newOrders.length,
         first_absence_count: firstAbsenceCount,
+        cycle_not_in_open_orders_count: disappeared.length,
         has_fetch_failures: failedUniqueKeys.length > 0,
         failed_unique_keys: failedUniqueKeys,
         diff_summary: diffSummary,

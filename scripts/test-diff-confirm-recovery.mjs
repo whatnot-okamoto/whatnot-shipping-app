@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 process.env.APP_ENVIRONMENT = "local";
 process.env.BASE_DATA_MODE = "mock";
@@ -12,6 +14,9 @@ const refetchRoute = await import("../app/api/orders/refetch/route.ts");
 const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
 const { shouldShowDiffConfirmAction } = await import(
   "../app/orders/components/diff-confirm-view-policy.ts"
+);
+const { default: DiffAbsenceSummary } = await import(
+  "../app/orders/components/DiffAbsenceSummary.ts"
 );
 
 async function clearMemoryRedis() {
@@ -97,6 +102,9 @@ const refetchResponse = await refetchRoute.POST(
   new Request("http://local.test/api/orders/refetch", { method: "POST" })
 );
 assert.equal(refetchResponse.status, 200);
+const refetchBody = await refetchResponse.json();
+assert.equal(refetchBody.diff_result.first_absence_count, 100);
+assert.equal(refetchBody.diff_result.cycle_not_in_open_orders_count, 100);
 
 const rawState = await redis.get("orders:refetch_state");
 const state = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
@@ -126,6 +134,18 @@ try {
 async function readState() {
   const raw = await redis.get("orders:refetch_state");
   return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+async function readRedisContents() {
+  const keys = (await redis.keys("*")).sort();
+  return Promise.all(
+    keys.map(async (key) => [
+      key,
+      key.startsWith("index:")
+        ? (await redis.smembers(key)).sort()
+        : await redis.get(key),
+    ])
+  );
 }
 
 async function postDiff(cycleId) {
@@ -309,13 +329,64 @@ assert.ok(
 );
 assert.equal(JSON.stringify(await readState()), beforeGet);
 
-// J resuming_partial: a current-cycle snapshot with missing pending body is
-// safely resumable, but already-processed detail text cannot be reconstructed.
-await redis.set(
-  `order_snapshot:${freshOrder.unique_key}`,
-  JSON.stringify({ ...freshSnapshot, pdf_verification_cycle_id: getCycle })
+// J resuming_partial: reproduce the legacy route's normal partial completion.
+// The processed order has already disappeared from both pending storage and
+// its index, while only the unprocessed order remains indexed.
+await clearMemoryRedis();
+baseFake.setWorkflowBaseOrders([]);
+const processedOrder = makeOrder("TEST-GET-PROCESSED", 20_005);
+const remainingOrder = makeOrder("TEST-GET-REMAINING", 20_006);
+await initializeOrderData([processedOrder, remainingOrder]);
+const legacyPartialCycle = "cycle-get-legacy-partial";
+for (const order of [processedOrder, remainingOrder]) {
+  const rawSnapshot = await redis.get(`order_snapshot:${order.unique_key}`);
+  const snapshot =
+    typeof rawSnapshot === "string" ? JSON.parse(rawSnapshot) : rawSnapshot;
+  await redis.set(
+    `order_snapshot_pending:${order.unique_key}`,
+    JSON.stringify({
+      ...snapshot,
+      pdf_verification_cycle_id: legacyPartialCycle,
+      items_summary: `changed-${order.unique_key}`,
+    })
+  );
+  await redis.sadd("index:order_snapshot_pending", order.unique_key);
+}
+const processedSnapshotRaw = await redis.get(
+  `order_snapshot:${processedOrder.unique_key}`
 );
-await redis.del(`order_snapshot_pending:${freshOrder.unique_key}`);
+const processedSnapshot =
+  typeof processedSnapshotRaw === "string"
+    ? JSON.parse(processedSnapshotRaw)
+    : processedSnapshotRaw;
+await redis.set(
+  `order_snapshot:${processedOrder.unique_key}`,
+  JSON.stringify({
+    ...processedSnapshot,
+    pdf_verification_cycle_id: legacyPartialCycle,
+    items_summary: `changed-${processedOrder.unique_key}`,
+  })
+);
+await redis.del(`order_snapshot_pending:${processedOrder.unique_key}`);
+await redis.srem("index:order_snapshot_pending", processedOrder.unique_key);
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(
+    cycleState(legacyPartialCycle, {
+      order_results: {
+        [processedOrder.unique_key]: {
+          status: "verified_eligible",
+          issues: [],
+        },
+        [remainingOrder.unique_key]: {
+          status: "verified_eligible",
+          issues: [],
+        },
+      },
+    })
+  )
+);
+const beforePartialGet = await readRedisContents();
 const partialGetBody = await (
   await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
 ).json();
@@ -323,12 +394,18 @@ assert.equal(partialGetBody.review.review_status, "resuming_partial");
 assert.equal(partialGetBody.review.can_confirm, true);
 assert.equal(partialGetBody.review.processed_details_fully_recoverable, false);
 assert.equal(partialGetBody.review.details_recovery, "remaining_only");
+assert.deepEqual(
+  partialGetBody.review.remaining_diff_summary.map((item) => item.unique_key),
+  [remainingOrder.unique_key]
+);
+assert.equal(baseFake.getWorkflowOrderListCallCount(), 0);
+assert.deepEqual(await readRedisContents(), beforePartialGet);
 
 // J conflict: an old-cycle/unknown orphan cannot be auto-recovered and the UI
 // must not render an ordinary confirmation button.
 await redis.set(
-  `order_snapshot:${freshOrder.unique_key}`,
-  JSON.stringify({ ...freshSnapshot, pdf_verification_cycle_id: "old-cycle" })
+  `order_snapshot:${processedOrder.unique_key}`,
+  JSON.stringify({ ...processedSnapshot, pdf_verification_cycle_id: "old-cycle" })
 );
 const conflictGetBody = await (
   await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
@@ -345,8 +422,69 @@ assert.equal(
   false
 );
 
+// J confirmed: a fully completed cycle is not a recovery conflict and does
+// not offer the ordinary confirmation action again.
+await clearMemoryRedis();
+const completedOrder = makeOrder("TEST-GET-CONFIRMED", 20_007);
+await initializeOrderData([completedOrder]);
+const completedCycle = "cycle-get-confirmed";
+const completedSnapshotRaw = await redis.get(
+  `order_snapshot:${completedOrder.unique_key}`
+);
+const completedSnapshot =
+  typeof completedSnapshotRaw === "string"
+    ? JSON.parse(completedSnapshotRaw)
+    : completedSnapshotRaw;
+await redis.set(
+  `order_snapshot:${completedOrder.unique_key}`,
+  JSON.stringify({
+    ...completedSnapshot,
+    pdf_verification_cycle_id: completedCycle,
+  })
+);
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(
+    cycleState(completedCycle, {
+      phase: "confirmed",
+      diff_confirmed_flag: true,
+      order_results: {
+        [completedOrder.unique_key]: {
+          status: "verified_eligible",
+          issues: [],
+        },
+      },
+    })
+  )
+);
+const completedGetBody = await (
+  await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
+).json();
+assert.equal(completedGetBody.review.review_status, "confirmed");
+assert.equal(completedGetBody.review.can_confirm, false);
+assert.equal(completedGetBody.review.processed_details_fully_recoverable, false);
+assert.equal(completedGetBody.review.details_recovery, "none");
+assert.equal(
+  shouldShowDiffConfirmAction({
+    can_confirm: completedGetBody.review.can_confirm,
+    recovery_status: completedGetBody.review.review_status,
+  }),
+  false
+);
+
+// UI: first-time absences and the full current-cycle absence total remain
+// distinct instead of presenting the first-time count as the total.
+const absenceSummaryHtml = renderToStaticMarkup(
+  createElement(DiffAbsenceSummary, {
+    firstAbsenceCount: 3,
+    cycleNotInOpenOrdersCount: 7,
+  })
+);
+assert.match(absenceSummaryHtml, /今回初めて不在となった注文：3件/);
+assert.match(absenceSummaryHtml, /今回cycleで不在判定となった総数：7件/);
+
 // K: new states provide the exact count; legacy states use null/count-less UI.
-await redis.del(`order_snapshot_pending:${freshOrder.unique_key}`);
+await redis.del(`order_snapshot_pending:${remainingOrder.unique_key}`);
 await redis.del("index:order_snapshot_pending");
 await redis.set(
   "orders:refetch_state",
