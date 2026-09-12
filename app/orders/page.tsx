@@ -59,10 +59,14 @@ type DiffRecoveryApiResponse = {
   success: boolean;
   review?: {
     refetch_cycle_id: string;
+    review_status: "fresh" | "resuming_partial" | "conflict";
+    can_confirm: boolean;
     remaining_diff_count: number;
     remaining_diff_summary: DiffResult["diff_summary"];
     first_absence_count: number;
     new_uninitialized_count: number | null;
+    has_fetch_failures: boolean;
+    failed_unique_keys: string[];
     message: string;
   };
 };
@@ -188,7 +192,11 @@ export default function OrdersPage() {
             review.new_uninitialized_count > 0,
           new_uninitialized_count: review.new_uninitialized_count,
           first_absence_count: review.first_absence_count,
+          recovery_status: review.review_status,
+          can_confirm: review.can_confirm,
           recovery_message: review.message,
+          has_fetch_failures: review.has_fetch_failures,
+          failed_unique_keys: review.failed_unique_keys,
           diff_summary: review.remaining_diff_summary,
         });
       }

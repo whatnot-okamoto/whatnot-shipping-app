@@ -6,6 +6,8 @@ export const WORKFLOW_LEASE_KEY = "orders:workflow_operation_lease";
 export const WORKFLOW_LEASE_TTL_SECONDS = 90;
 export const WORKFLOW_LEASE_RENEW_INTERVAL_MS = 30_000;
 export const DIFF_CONFIRM_CHUNK_SIZE = 100;
+export const ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE =
+  "orders_operation_in_progress";
 
 export type WorkflowOperation =
   | "init"
@@ -78,4 +80,3 @@ export async function releaseWorkflowLease(
 ): Promise<boolean> {
   return redis.compareAndDelete(WORKFLOW_LEASE_KEY, lease.serialized);
 }
-

@@ -27,6 +27,7 @@ export type RefetchState = {
   order_results?: Record<string, RefetchOrderResult>;
   phase?: RefetchPhase;
   new_uninitialized_count?: number;
+  first_absence_count?: number;
   post_init_refetch_ready?: boolean;
 };
 

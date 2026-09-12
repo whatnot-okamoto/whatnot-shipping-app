@@ -9,6 +9,7 @@ import {
 } from "@/lib/order-diff-confirmation";
 import {
   acquireWorkflowLease,
+  ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
   releaseWorkflowLease,
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
@@ -43,7 +44,14 @@ export async function POST(req: Request) {
 
   const lease = await acquireWorkflowLease("diff-confirm", refetchCycleId);
   if (!lease) {
-    return Response.json({ success: false, error: "別の更新処理が進行中です。" }, { status: 409 });
+    return Response.json(
+      {
+        success: false,
+        error_code: ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
+        error: "別の更新処理が進行中です。",
+      },
+      { status: 409 }
+    );
   }
   try {
     const result = await confirmDiffCycle(refetchCycleId, lease);

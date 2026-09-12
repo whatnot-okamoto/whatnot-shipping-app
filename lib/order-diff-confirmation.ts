@@ -49,13 +49,18 @@ async function readPendingPairs(uniqueKeys: string[]): Promise<PendingPair[]> {
 export type DiffRecoveryReview = {
   refetch_cycle_id: string;
   phase: RefetchState["phase"] | "legacy";
+  review_status: "fresh" | "resuming_partial" | "conflict";
+  can_confirm: boolean;
+  processed_details_fully_recoverable: boolean;
   diff_confirmed_flag: boolean;
   remaining_diff_count: number;
   remaining_diff_summary: DiffRecoveryItem[];
   first_absence_count: number;
   cycle_not_in_open_orders_count: number;
   new_uninitialized_count: number | null;
-  details_recovery: "remaining_only";
+  has_fetch_failures: boolean;
+  failed_unique_keys: string[];
+  details_recovery: "full" | "remaining_only" | "none";
   message: string;
 };
 
@@ -66,8 +71,12 @@ export type DiffRecoveryItem = {
   severity: "info" | "warning";
 };
 
-function buildRemainingItem(pair: PendingPair): DiffRecoveryItem | null {
+function buildRemainingItem(
+  pair: PendingPair,
+  cycleId: string
+): DiffRecoveryItem | null {
   if (!pair.snapshot || !pair.pending) return null;
+  if (pair.pending.pdf_verification_cycle_id !== cycleId) return null;
   if (pair.pending.open_order_presence === "not_in_open_orders") return null;
   const changes = getStaffReviewSnapshotChanges(pair.snapshot, pair.pending);
   if (changes.itemChanged) {
@@ -97,21 +106,109 @@ function buildRemainingItem(pair: PendingPair): DiffRecoveryItem | null {
   return null;
 }
 
+type RecoveryClassification = {
+  reviewStatus: DiffRecoveryReview["review_status"];
+  canConfirm: boolean;
+  processedDetailsFullyRecoverable: boolean;
+  detailsRecovery: DiffRecoveryReview["details_recovery"];
+  message: string;
+};
+
+function classifyRecoveryState(
+  state: RefetchState,
+  pairs: PendingPair[]
+): RecoveryClassification {
+  const cycleId = state.refetch_cycle_id;
+  const hasUnsafePair =
+    !cycleId ||
+    pairs.some(({ snapshot, pending }) => {
+      if (!pending) {
+        return !snapshot || snapshot.pdf_verification_cycle_id !== cycleId;
+      }
+      return (
+        pending.pdf_verification_cycle_id !== cycleId || snapshot === null
+      );
+    });
+  const phaseContradiction =
+    (state.phase === "postprocessing" && pairs.length > 0) ||
+    state.phase === "confirmed" ||
+    (state.diff_confirmed_flag === true && pairs.length > 0) ||
+    state.refetch_done_flag !== true;
+
+  if (hasUnsafePair || phaseContradiction) {
+    return {
+      reviewStatus: "conflict",
+      canConfirm: false,
+      processedDetailsFullyRecoverable: false,
+      detailsRecovery: "none",
+      message:
+        "差分状態を安全に自動復旧できません。確認ボタンを押さず、管理者へ連絡してください。",
+    };
+  }
+
+  const hasProcessedPair = pairs.some(
+    ({ snapshot, pending }) =>
+      snapshot?.pdf_verification_cycle_id === cycleId &&
+      (pending === null || pending.pdf_verification_cycle_id === cycleId)
+  );
+  const isResuming =
+    hasProcessedPair ||
+    state.phase === "promoting" ||
+    state.phase === "postprocessing" ||
+    (state.phase === undefined && state.diff_confirmed_flag === true);
+  if (isResuming) {
+    return {
+      reviewStatus: "resuming_partial",
+      canConfirm: state.has_new_uninitialized !== true,
+      processedDetailsFullyRecoverable: false,
+      detailsRecovery: "remaining_only",
+      message:
+        "以前の確認処理が途中まで進んでいます。削除済みの差分詳細は完全復元できないため、残りの差分と再開状態を表示しています。",
+    };
+  }
+
+  return {
+    reviewStatus: "fresh",
+    canConfirm: state.has_new_uninitialized !== true,
+    processedDetailsFullyRecoverable: true,
+    detailsRecovery: "full",
+    message: "今回の再取得で検出した差分を表示しています。",
+  };
+}
+
 export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null> {
   const state = await getRefetchState();
   if (!state?.refetch_cycle_id) return null;
   const keys = await redis.smembers(PENDING_INDEX_KEY);
   const pairs = await readPendingPairs(keys);
-  const firstAbsenceCount = pairs.filter(
-    ({ snapshot, pending }) =>
-      pending?.pdf_verification_cycle_id === state.refetch_cycle_id &&
-      pending?.open_order_presence === "not_in_open_orders" &&
-      snapshot?.open_order_presence !== "not_in_open_orders"
-  ).length;
+  const classification = classifyRecoveryState(state, pairs);
+  const firstAbsenceCount =
+    typeof state.first_absence_count === "number"
+      ? state.first_absence_count
+      : pairs.filter(
+          ({ snapshot, pending }) =>
+            pending?.pdf_verification_cycle_id === state.refetch_cycle_id &&
+            pending?.open_order_presence === "not_in_open_orders" &&
+            snapshot?.open_order_presence !== "not_in_open_orders"
+        ).length;
   const remainingDiffSummary = pairs.flatMap((pair) => {
-    const item = buildRemainingItem(pair);
+    const item = buildRemainingItem(pair, state.refetch_cycle_id!);
     return item ? [item] : [];
   });
+  const failedUniqueKeys = Object.entries(state.order_results ?? {}).flatMap(
+    ([uniqueKey, result]) =>
+      result.status === "fetch_failed" ? [uniqueKey] : []
+  );
+  const recoveredFetchFailureItems: DiffRecoveryItem[] = failedUniqueKeys.map(
+    (uniqueKey) => ({
+      unique_key: uniqueKey,
+      diff_type: "other",
+      description:
+        "注文詳細を取得できませんでした。この注文は今回の選択対象から外れます",
+      severity: "warning",
+    })
+  );
+  const combinedSummary = [...remainingDiffSummary, ...recoveredFetchFailureItems];
   const cycleNotInOpenOrdersCount = Object.values(state.order_results ?? {}).filter(
     (result) => result.status === "not_in_open_orders"
   ).length;
@@ -124,15 +221,20 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
   return {
     refetch_cycle_id: state.refetch_cycle_id,
     phase: state.phase ?? "legacy",
+    review_status: classification.reviewStatus,
+    can_confirm: classification.canConfirm,
+    processed_details_fully_recoverable:
+      classification.processedDetailsFullyRecoverable,
     diff_confirmed_flag: state.diff_confirmed_flag,
-    remaining_diff_count: remainingDiffSummary.length,
-    remaining_diff_summary: remainingDiffSummary,
+    remaining_diff_count: combinedSummary.length,
+    remaining_diff_summary: combinedSummary,
     first_absence_count: firstAbsenceCount,
     cycle_not_in_open_orders_count: cycleNotInOpenOrdersCount,
     new_uninitialized_count: newUninitializedCount,
-    details_recovery: "remaining_only",
-    message:
-      "旧処理で削除済みの差分詳細は完全復元できません。残りの差分と処理再開状態を表示しています。",
+    has_fetch_failures: failedUniqueKeys.length > 0,
+    failed_unique_keys: failedUniqueKeys,
+    details_recovery: classification.detailsRecovery,
+    message: classification.message,
   };
 }
 
@@ -166,6 +268,13 @@ export async function confirmDiffCycle(
   }
 
   let pendingKeys = await redis.smembers(PENDING_INDEX_KEY);
+  if (state.phase === "postprocessing" && pendingKeys.length > 0) {
+    return {
+      status: "unsafe_recovery",
+      message:
+        "後処理状態とpendingが一致しないため、自動変更を停止しました。",
+    };
+  }
   if (
     state.phase === "confirmed" &&
     state.diff_confirmed_flag === true &&

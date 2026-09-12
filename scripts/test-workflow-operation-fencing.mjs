@@ -76,6 +76,12 @@ function postDiff(cycleId) {
   return post(diffRoute, "/api/orders/diff-confirm", { refetch_cycle_id: cycleId });
 }
 
+async function assertOperationConflict(response) {
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(body.error_code, "orders_operation_in_progress");
+}
+
 function installAtomicGate(methodName, predicate = () => true) {
   const original = redis[methodName];
   let release;
@@ -113,6 +119,69 @@ assert.deepEqual(await readJson("order_snapshot_pending:keep"), { keep: true });
 assert.deepEqual(await redis.smembers("index:order_snapshot_pending"), ["keep"]);
 assert.equal(baseFake.getWorkflowOrderListCallCount(), 0);
 
+// init is closed to a genuine first bootstrap or the same-cycle
+// awaiting_initialization recovery. Every other state stops before BASE and
+// leaves business Redis data unchanged.
+for (const phase of ["awaiting_review", "promoting", "postprocessing", "confirmed"]) {
+  await clearMemoryRedis();
+  baseFake.setWorkflowBaseOrders([]);
+  const cycleId = `cycle-init-reject-${phase}`;
+  const protectedState = stateFor(cycleId, {
+    phase,
+    diff_confirmed_flag: phase === "confirmed",
+  });
+  await redis.set("orders:refetch_state", JSON.stringify(protectedState));
+  await redis.set("order:protected", JSON.stringify({ keep: phase }));
+  const beforeKeys = (await redis.keys("*")).sort();
+  const response = await post(initRoute, "/api/orders/init");
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error_code, "init_not_allowed");
+  assert.equal(baseFake.getWorkflowOrderListCallCount(), 0);
+  assert.deepEqual((await redis.keys("*")).sort(), beforeKeys);
+  assert.deepEqual(await readJson("orders:refetch_state"), protectedState);
+  assert.deepEqual(await readJson("order:protected"), { keep: phase });
+}
+
+await clearMemoryRedis();
+baseFake.setWorkflowBaseOrders([]);
+const initRecoveryCycle = "cycle-init-recovery";
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(stateFor(initRecoveryCycle, {
+    phase: "awaiting_initialization",
+    has_new_uninitialized: true,
+    new_uninitialized_count: 1,
+  }))
+);
+const recoveryInit = await post(initRoute, "/api/orders/init", {
+  refetch_cycle_id: initRecoveryCycle,
+});
+assert.equal(recoveryInit.status, 200);
+assert.equal((await readJson("orders:refetch_state")).post_init_refetch_ready, true);
+
+await clearMemoryRedis();
+baseFake.setWorkflowBaseOrders([]);
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(stateFor("cycle-init-mismatch", {
+    phase: "awaiting_initialization",
+    has_new_uninitialized: true,
+  }))
+);
+const mismatchState = await readJson("orders:refetch_state");
+const mismatchInit = await post(initRoute, "/api/orders/init", {
+  refetch_cycle_id: "different-cycle",
+});
+assert.equal(mismatchInit.status, 409);
+assert.equal(baseFake.getWorkflowOrderListCallCount(), 0);
+assert.deepEqual(await readJson("orders:refetch_state"), mismatchState);
+
+await clearMemoryRedis();
+baseFake.setWorkflowBaseOrders([]);
+const bootstrapInit = await post(initRoute, "/api/orders/init");
+assert.equal(bootstrapInit.status, 200);
+assert.equal(baseFake.getWorkflowOrderListCallCount(), 1);
+
 // G/H: while one diff-confirm owns the lease, a duplicate POST and a refetch
 // from another tab are both rejected atomically.
 await clearMemoryRedis();
@@ -130,8 +199,8 @@ const diffGate = installAtomicGate(
 );
 const firstDiffPromise = postDiff(concurrentDiffCycle);
 await diffGate.entered;
-assert.equal((await postDiff(concurrentDiffCycle)).status, 409);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 409);
+await assertOperationConflict(await postDiff(concurrentDiffCycle));
+await assertOperationConflict(await post(refetchRoute, "/api/orders/refetch"));
 diffGate.release();
 assert.equal((await firstDiffPromise).status, 200);
 diffGate.restore();
@@ -168,7 +237,7 @@ baseFake.setWorkflowBaseOrders([]);
 let baseGate = baseFake.installWorkflowOrderListGate();
 const initPromise = post(initRoute, "/api/orders/init");
 await baseGate.entered;
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 409);
+await assertOperationConflict(await post(refetchRoute, "/api/orders/refetch"));
 baseGate.release();
 assert.equal((await initPromise).status, 200);
 
@@ -177,7 +246,7 @@ baseFake.setWorkflowBaseOrders([]);
 baseGate = baseFake.installWorkflowOrderListGate();
 const refetchPromise = post(refetchRoute, "/api/orders/refetch");
 await baseGate.entered;
-assert.equal((await post(initRoute, "/api/orders/init")).status, 409);
+await assertOperationConflict(await post(initRoute, "/api/orders/init"));
 baseGate.release();
 assert.equal((await refetchPromise).status, 200);
 
@@ -185,11 +254,10 @@ assert.equal((await refetchPromise).status, 200);
 await clearMemoryRedis();
 baseFake.setWorkflowBaseOrders([]);
 const initDiffCycle = "cycle-init-diff";
-await redis.set("orders:refetch_state", JSON.stringify(stateFor(initDiffCycle)));
 baseGate = baseFake.installWorkflowOrderListGate();
 const initAgainstDiff = post(initRoute, "/api/orders/init");
 await baseGate.entered;
-assert.equal((await postDiff(initDiffCycle)).status, 409);
+await assertOperationConflict(await postDiff(initDiffCycle));
 baseGate.release();
 await initAgainstDiff;
 
@@ -206,7 +274,7 @@ const diffInitGate = installAtomicGate(
 );
 const diffAgainstInit = postDiff(diffInitCycle);
 await diffInitGate.entered;
-assert.equal((await post(initRoute, "/api/orders/init")).status, 409);
+await assertOperationConflict(await post(initRoute, "/api/orders/init"));
 diffInitGate.release();
 assert.equal((await diffAgainstInit).status, 200);
 diffInitGate.restore();
@@ -263,7 +331,7 @@ const sessionPromise = post(sessionRoute, "/api/session/start", {
   refetch_cycle_id: prepared.cycleId,
 });
 await sessionGate.entered;
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 409);
+await assertOperationConflict(await post(refetchRoute, "/api/orders/refetch"));
 sessionGate.release();
 assert.equal((await sessionPromise).status, 200);
 sessionGate.restore();
@@ -276,9 +344,8 @@ const sessionAgainstRefetch = await post(sessionRoute, "/api/session/start", {
   selected_unique_keys: [prepared.order.unique_key],
   refetch_cycle_id: prepared.cycleId,
 });
-assert.equal(sessionAgainstRefetch.status, 409);
+await assertOperationConflict(sessionAgainstRefetch);
 baseGate.release();
 assert.equal((await refetchAgainstSession).status, 200);
 
 console.log("workflow operation fencing tests passed");
-

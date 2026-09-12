@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import {
+  shouldShowDiffConfirmAction,
+  type DiffRecoveryStatus,
+} from "./diff-confirm-view-policy";
 
 export type DiffItem = {
   unique_key: string;
@@ -16,6 +20,8 @@ export type DiffResult = {
   new_uninitialized_count: number | null;
   first_absence_count?: number;
   recovery_message?: string;
+  recovery_status?: DiffRecoveryStatus;
+  can_confirm?: boolean;
   has_fetch_failures?: boolean;
   failed_unique_keys?: string[];
   diff_summary: DiffItem[];
@@ -60,6 +66,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     failed_unique_keys = [],
     diff_summary,
   } = diffResult;
+  const showConfirmAction = shouldShowDiffConfirmAction(diffResult);
 
   /** 差分確認APIを呼び出して完了する */
   const handleConfirm = async () => {
@@ -192,15 +199,17 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
               差分はありません
             </p>
             {error && <p className="text-xs text-red-600">{error}</p>}
-            <button
-              type="button"
-              disabled={isProcessing}
-              onClick={handleConfirm}
-              className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isProcessing ? "処理中..." : "確認して出荷準備へ進む"}
-            </button>
+            {showConfirmAction && (
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={handleConfirm}
+                className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isProcessing ? "処理中..." : "確認して出荷準備へ進む"}
+              </button>
+            )}
           </>
         )}
 
@@ -221,15 +230,17 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
               ))}
             </div>
             {error && <p className="text-xs text-red-600">{error}</p>}
-            <button
-              type="button"
-              disabled={isProcessing}
-              onClick={handleConfirm}
-              className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isProcessing ? "処理中..." : "内容を確認しました"}
-            </button>
+            {showConfirmAction && (
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={handleConfirm}
+                className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isProcessing ? "処理中..." : "内容を確認しました"}
+              </button>
+            )}
           </>
         )}
       </div>

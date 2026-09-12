@@ -23,6 +23,7 @@ import { assessOrderForPdf } from "@/lib/pdf-order-assessment";
 import {
   acquireWorkflowLease,
   DIFF_CONFIRM_CHUNK_SIZE,
+  ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
   fencedMutate,
   releaseWorkflowLease,
   renewWorkflowLeaseIfDue,
@@ -125,7 +126,11 @@ export async function POST(req: Request) {
   const lease = await acquireWorkflowLease("refetch", sourceRefetchCycleId);
   if (!lease) {
     return Response.json(
-      { success: false, error: "別の更新処理が進行中です。" },
+      {
+        success: false,
+        error_code: ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
+        error: "別の更新処理が進行中です。",
+      },
       { status: 409 }
     );
   }
@@ -331,6 +336,7 @@ export async function POST(req: Request) {
       refetch_result: failedUniqueKeys.length > 0 ? "partial" : "complete",
       phase: hasNewUninitialized ? "awaiting_initialization" : "awaiting_review",
       new_uninitialized_count: newOrders.length,
+      first_absence_count: firstAbsenceCount,
       post_init_refetch_ready: false,
       order_results: orderResults,
     });

@@ -20,6 +20,7 @@ import { requireAuth } from "@/lib/auth";
 import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
 import {
   acquireWorkflowLease,
+  ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
   releaseWorkflowLease,
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
@@ -66,7 +67,10 @@ export async function POST(request: Request) {
   const lease = await acquireWorkflowLease("session-start", refetch_cycle_id);
   if (!lease) {
     return Response.json(
-      { error: "WORKFLOW_CONFLICT: 別の更新処理が進行中です" },
+      {
+        error_code: ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
+        error: "WORKFLOW_CONFLICT: 別の更新処理が進行中です",
+      },
       { status: 409 }
     );
   }

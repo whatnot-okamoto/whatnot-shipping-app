@@ -10,6 +10,9 @@ const { initializeOrderData } = await import("../lib/order-store.ts");
 const baseFake = await import("./fakes/workflow-base-api.ts");
 const refetchRoute = await import("../app/api/orders/refetch/route.ts");
 const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
+const { shouldShowDiffConfirmAction } = await import(
+  "../app/orders/components/diff-confirm-view-policy.ts"
+);
 
 async function clearMemoryRedis() {
   const keys = await redis.keys("*");
@@ -255,13 +258,36 @@ try {
   redis.fencedMutate = originalFencedMutate;
 }
 
-// J/K: GET performs no BASE call/write, advertises the recovery limit, and
-// provides exact/new legacy-compatible uninitialized counts.
+// J fresh: all current-cycle pending details are available, fetch_failed
+// warnings are reconstructed from order_results, and the full cycle absence
+// total is returned without BASE or writes.
 await clearMemoryRedis();
 const getCycle = "cycle-get";
+const freshOrder = makeOrder("TEST-GET-FRESH", 20_004);
+await initializeOrderData([freshOrder]);
+const freshSnapshotRaw = await redis.get(`order_snapshot:${freshOrder.unique_key}`);
+const freshSnapshot =
+  typeof freshSnapshotRaw === "string"
+    ? JSON.parse(freshSnapshotRaw)
+    : freshSnapshotRaw;
+await redis.set(
+  `order_snapshot_pending:${freshOrder.unique_key}`,
+  JSON.stringify({
+    ...freshSnapshot,
+    pdf_verification_cycle_id: getCycle,
+    items_summary: "changed in current cycle",
+  })
+);
+await redis.sadd("index:order_snapshot_pending", freshOrder.unique_key);
 await redis.set(
   "orders:refetch_state",
-  JSON.stringify(cycleState(getCycle, { has_new_uninitialized: true }))
+  JSON.stringify(cycleState(getCycle, {
+    order_results: {
+      "ABSENT-1": { status: "not_in_open_orders", issues: ["not_in_open_orders"] },
+      "ABSENT-2": { status: "not_in_open_orders", issues: ["not_in_open_orders"] },
+      "FETCH-FAILED": { status: "fetch_failed", issues: [] },
+    },
+  }))
 );
 const beforeGet = JSON.stringify(await readState());
 const getResponse = await diffConfirmRoute.GET(
@@ -269,10 +295,67 @@ const getResponse = await diffConfirmRoute.GET(
 );
 const getBody = await getResponse.json();
 assert.equal(getResponse.status, 200);
-assert.equal(getBody.review.details_recovery, "remaining_only");
-assert.match(getBody.review.message, /完全復元できません/);
-assert.equal(getBody.review.new_uninitialized_count, null);
+assert.equal(getBody.review.review_status, "fresh");
+assert.equal(getBody.review.can_confirm, true);
+assert.equal(getBody.review.processed_details_fully_recoverable, true);
+assert.equal(getBody.review.details_recovery, "full");
+assert.equal(getBody.review.cycle_not_in_open_orders_count, 2);
+assert.equal(getBody.review.has_fetch_failures, true);
+assert.deepEqual(getBody.review.failed_unique_keys, ["FETCH-FAILED"]);
+assert.ok(
+  getBody.review.remaining_diff_summary.some(
+    (item) => item.unique_key === "FETCH-FAILED" && item.severity === "warning"
+  )
+);
 assert.equal(JSON.stringify(await readState()), beforeGet);
+
+// J resuming_partial: a current-cycle snapshot with missing pending body is
+// safely resumable, but already-processed detail text cannot be reconstructed.
+await redis.set(
+  `order_snapshot:${freshOrder.unique_key}`,
+  JSON.stringify({ ...freshSnapshot, pdf_verification_cycle_id: getCycle })
+);
+await redis.del(`order_snapshot_pending:${freshOrder.unique_key}`);
+const partialGetBody = await (
+  await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
+).json();
+assert.equal(partialGetBody.review.review_status, "resuming_partial");
+assert.equal(partialGetBody.review.can_confirm, true);
+assert.equal(partialGetBody.review.processed_details_fully_recoverable, false);
+assert.equal(partialGetBody.review.details_recovery, "remaining_only");
+
+// J conflict: an old-cycle/unknown orphan cannot be auto-recovered and the UI
+// must not render an ordinary confirmation button.
+await redis.set(
+  `order_snapshot:${freshOrder.unique_key}`,
+  JSON.stringify({ ...freshSnapshot, pdf_verification_cycle_id: "old-cycle" })
+);
+const conflictGetBody = await (
+  await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
+).json();
+assert.equal(conflictGetBody.review.review_status, "conflict");
+assert.equal(conflictGetBody.review.can_confirm, false);
+assert.equal(conflictGetBody.review.processed_details_fully_recoverable, false);
+assert.equal(conflictGetBody.review.details_recovery, "none");
+assert.equal(
+  shouldShowDiffConfirmAction({
+    can_confirm: conflictGetBody.review.can_confirm,
+    recovery_status: conflictGetBody.review.review_status,
+  }),
+  false
+);
+
+// K: new states provide the exact count; legacy states use null/count-less UI.
+await redis.del(`order_snapshot_pending:${freshOrder.unique_key}`);
+await redis.del("index:order_snapshot_pending");
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(cycleState(getCycle, { has_new_uninitialized: true }))
+);
+const legacyCountBody = await (
+  await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
+).json();
+assert.equal(legacyCountBody.review.new_uninitialized_count, null);
 await redis.set(
   "orders:refetch_state",
   JSON.stringify(cycleState(getCycle, {

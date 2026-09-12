@@ -8,9 +8,11 @@ import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
 import { initializeOrderData } from "@/lib/order-store";
 import type { BaseOrder } from "@/lib/base-api";
 import { requireAuth } from "@/lib/auth";
+import { redis } from "@/lib/upstash";
 import { getRefetchState, setRefetchStateFenced } from "@/lib/refetch-store";
 import {
   acquireWorkflowLease,
+  ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
   releaseWorkflowLease,
   renewWorkflowLeaseIfDue,
   WorkflowLeaseLostError,
@@ -38,19 +40,43 @@ export async function POST(req: Request) {
   const lease = await acquireWorkflowLease("init", requestedCycleId);
   if (!lease) {
     return Response.json(
-      { success: false, message: "別の更新処理が進行中です。" },
+      {
+        success: false,
+        error_code: ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
+        message: "別の更新処理が進行中です。",
+      },
       { status: 409 }
     );
   }
 
   try {
-    const refetchState = await getRefetchState();
-    if (
+    const [refetchState, indexedOrders, pendingKeys, currentSessionId] =
+      await Promise.all([
+        getRefetchState(),
+        redis.smembers("index:orders"),
+        redis.smembers("index:order_snapshot_pending"),
+        redis.get<string>("session:current"),
+      ]);
+    const isInitialBootstrap =
+      requestedCycleId === null &&
+      refetchState === null &&
+      indexedOrders.length === 0 &&
+      pendingKeys.length === 0 &&
+      currentSessionId === null;
+    const isSameCycleRecoveryInit =
       refetchState?.has_new_uninitialized === true &&
-      (!requestedCycleId || requestedCycleId !== refetchState.refetch_cycle_id)
-    ) {
+      (refetchState.phase === "awaiting_initialization" ||
+        refetchState.phase === undefined) &&
+      requestedCycleId !== null &&
+      requestedCycleId === refetchState.refetch_cycle_id;
+    if (!isInitialBootstrap && !isSameCycleRecoveryInit) {
       return Response.json(
-        { success: false, message: "再取得cycleが一致しません。画面を再読み込みしてください。" },
+        {
+          success: false,
+          error_code: "init_not_allowed",
+          message:
+            "初期化できる状態ではありません。画面を再読み込みしてください。",
+        },
         { status: 409 }
       );
     }
