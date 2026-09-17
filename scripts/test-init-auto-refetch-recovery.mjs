@@ -51,6 +51,49 @@ async function readRefetchState() {
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
+async function readRedisContents() {
+  const keys = (await redis.keys("*")).sort();
+  return Promise.all(
+    keys.map(async (key) => [
+      key,
+      key.startsWith("index:")
+        ? (await redis.smembers(key)).sort()
+        : await redis.get(key),
+    ])
+  );
+}
+
+function observeRedisWriteCalls() {
+  const methodNames = [
+    "set",
+    "del",
+    "sadd",
+    "srem",
+    "compareAndDelete",
+    "compareAndExpire",
+    "setIfValueMatches",
+    "fencedMutate",
+    "fencedStartSession",
+  ];
+  const originals = new Map();
+  const calls = [];
+  for (const name of methodNames) {
+    if (typeof redis[name] !== "function") continue;
+    const original = redis[name];
+    originals.set(name, original);
+    redis[name] = async function (...args) {
+      calls.push({ name, args });
+      return original.apply(this, args);
+    };
+  }
+  return {
+    calls,
+    restore() {
+      for (const [name, original] of originals) redis[name] = original;
+    },
+  };
+}
+
 async function seedAwaitingInitializationState(cycleId, count = 11) {
   await clearMemoryRedis();
   await redis.set(
@@ -154,6 +197,98 @@ async function withinGuard(promise, scenario, timeoutMs = 250) {
     clearTimeout(guardTimer);
   }
 }
+
+// A pair-level recovery conflict must fail before lease acquisition or BASE.
+// Stale has_new_uninitialized alone is never authority to initialize, even
+// when BASE would currently return an empty list.
+const unsafeCycleId = "TEST-UNSAFE-INITIALIZATION-CONFLICT";
+const unsafeOrder = makeOrder("TEST-UNSAFE-INITIALIZATION-ORDER", 40_999);
+await seedAwaitingInitializationState(unsafeCycleId, 1);
+await initializeOrderData([unsafeOrder]);
+const unsafeSnapshotRaw = await redis.get(
+  `order_snapshot:${unsafeOrder.unique_key}`
+);
+const unsafeSnapshot =
+  typeof unsafeSnapshotRaw === "string"
+    ? JSON.parse(unsafeSnapshotRaw)
+    : unsafeSnapshotRaw;
+await redis.set(
+  `order_snapshot:${unsafeOrder.unique_key}`,
+  JSON.stringify({ ...unsafeSnapshot, pdf_verification_cycle_id: "old-cycle" })
+);
+await redis.sadd("index:order_snapshot_pending", unsafeOrder.unique_key);
+baseFake.setWorkflowBaseOrders([]);
+const unsafeBefore = await readRedisContents();
+const listCallsBeforeUnsafeInit = baseFake.getWorkflowOrderListCallCount();
+const detailCallsBeforeUnsafeInit = baseFake.getWorkflowDetailCallCount();
+const writeObservation = observeRedisWriteCalls();
+let unsafeInitResponse;
+try {
+  unsafeInitResponse = await withinGuard(
+    post(initRoute, "/api/orders/init", {
+      refetch_cycle_id: unsafeCycleId,
+    }),
+    "unsafe-initialization-conflict",
+    2_000
+  );
+} finally {
+  writeObservation.restore();
+}
+assert.equal(unsafeInitResponse.status, 409);
+const unsafeInitBody = await unsafeInitResponse.json();
+assert.equal(unsafeInitBody.success, false);
+assert.equal(unsafeInitBody.error_code, "unsafe_initialization_state");
+assert.equal(baseFake.getWorkflowOrderListCallCount(), listCallsBeforeUnsafeInit);
+assert.equal(baseFake.getWorkflowDetailCallCount(), detailCallsBeforeUnsafeInit);
+assert.equal(writeObservation.calls.length, 0, "conflict preflight must perform zero Redis writes");
+assert.equal(await redis.get(WORKFLOW_LEASE_KEY), null);
+assert.deepEqual(await readRedisContents(), unsafeBefore);
+
+// If safety changes after the read-only preflight but before BASE, the
+// post-lease recheck rejects the stale request and does not call BASE.
+const recheckCycleId = "TEST-INITIALIZATION-POST-LEASE-RECHECK";
+await seedAwaitingInitializationState(recheckCycleId, 1);
+const originalRedisSet = redis.set;
+let stateChangedAfterLease = false;
+redis.set = async function (...args) {
+  const result = await originalRedisSet.apply(this, args);
+  if (
+    args[0] === WORKFLOW_LEASE_KEY &&
+    result === "OK" &&
+    !stateChangedAfterLease
+  ) {
+    stateChangedAfterLease = true;
+    const current = await readRefetchState();
+    await originalRedisSet.call(
+      this,
+      "orders:refetch_state",
+      JSON.stringify({ ...current, phase: "awaiting_review" })
+    );
+  }
+  return result;
+};
+let recheckResponse;
+try {
+  recheckResponse = await withinGuard(
+    post(initRoute, "/api/orders/init", {
+      refetch_cycle_id: recheckCycleId,
+    }),
+    "initialization-post-lease-recheck",
+    2_000
+  );
+} finally {
+  redis.set = originalRedisSet;
+}
+assert.equal(stateChangedAfterLease, true);
+assert.equal(recheckResponse.status, 409);
+assert.equal(
+  (await recheckResponse.json()).error_code,
+  "unsafe_initialization_state"
+);
+assert.equal(baseFake.getWorkflowOrderListCallCount(), 0);
+assert.equal(baseFake.getWorkflowDetailCallCount(), 0);
+assert.equal((await readRefetchState()).phase, "awaiting_review");
+assert.equal(await redis.get(WORKFLOW_LEASE_KEY), null);
 
 // Exact happy path: confirmed baseline -> 23 first absences + one new order ->
 // init -> authorized automatic refetch -> next review state.

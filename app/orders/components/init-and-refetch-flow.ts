@@ -65,7 +65,11 @@ function isDiffResultResponse(value: unknown): boolean {
       isNonNegativeSafeInteger(value.new_uninitialized_count)
     ) ||
     !Array.isArray(value.diff_summary) ||
-    !value.diff_summary.every(isDiffItem)
+    !value.diff_summary.every(isDiffItem) ||
+    typeof value.can_initialize !== "boolean" ||
+    !["fresh", "resuming_partial", "conflict", "confirmed"].includes(
+      String(value.recovery_status)
+    )
   ) {
     return false;
   }
@@ -91,14 +95,6 @@ function isDiffResultResponse(value: unknown): boolean {
     value.failed_unique_keys !== undefined &&
     (!Array.isArray(value.failed_unique_keys) ||
       !value.failed_unique_keys.every((item) => typeof item === "string"))
-  ) {
-    return false;
-  }
-  if (
-    value.recovery_status !== undefined &&
-    !["fresh", "resuming_partial", "conflict", "confirmed"].includes(
-      String(value.recovery_status)
-    )
   ) {
     return false;
   }

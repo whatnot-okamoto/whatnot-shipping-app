@@ -12,7 +12,7 @@ const { initializeOrderData } = await import("../lib/order-store.ts");
 const baseFake = await import("./fakes/workflow-base-api.ts");
 const refetchRoute = await import("../app/api/orders/refetch/route.ts");
 const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
-const { shouldShowDiffConfirmAction } = await import(
+const { getInitializationActionView, shouldShowDiffConfirmAction } = await import(
   "../app/orders/components/diff-confirm-view-policy.ts"
 );
 const { default: DiffAbsenceSummary } = await import(
@@ -412,6 +412,7 @@ const conflictGetBody = await (
 ).json();
 assert.equal(conflictGetBody.review.review_status, "conflict");
 assert.equal(conflictGetBody.review.can_confirm, false);
+assert.equal(conflictGetBody.review.can_initialize, false);
 assert.equal(conflictGetBody.review.processed_details_fully_recoverable, false);
 assert.equal(conflictGetBody.review.details_recovery, "none");
 assert.equal(
@@ -420,6 +421,16 @@ assert.equal(
     recovery_status: conflictGetBody.review.review_status,
   }),
   false
+);
+assert.equal(
+  getInitializationActionView({
+    has_new_uninitialized: true,
+    can_initialize: conflictGetBody.review.can_initialize,
+    recovery_status: conflictGetBody.review.review_status,
+    requires_reload: false,
+  }).visible,
+  false,
+  "conflict must not expose initialization even when stale state reports an uninitialized order"
 );
 
 // J confirmed: a fully completed cycle is not a recovery conflict and does
@@ -526,5 +537,59 @@ const countedBody = await (
   await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
 ).json();
 assert.equal(countedBody.review.new_uninitialized_count, 8);
+assert.equal(countedBody.review.review_status, "fresh");
+assert.equal(countedBody.review.phase, "legacy");
+assert.equal(
+  countedBody.review.can_initialize,
+  false,
+  "legacy state must not be upgraded to a safe initialization state"
+);
+
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify(cycleState(getCycle, {
+    phase: "awaiting_initialization",
+    has_new_uninitialized: true,
+    new_uninitialized_count: 8,
+  }))
+);
+const safeInitializationBody = await (
+  await diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm"))
+).json();
+assert.equal(safeInitializationBody.review.review_status, "fresh");
+assert.equal(safeInitializationBody.review.can_confirm, false);
+assert.equal(safeInitializationBody.review.can_initialize, true);
+assert.equal(
+  getInitializationActionView({
+    has_new_uninitialized: true,
+    can_initialize: safeInitializationBody.review.can_initialize,
+    recovery_status: safeInitializationBody.review.review_status,
+    requires_reload: false,
+  }).visible,
+  true
+);
+
+for (const unsafeInput of [
+  {
+    has_new_uninitialized: true,
+    recovery_status: "fresh",
+  },
+  {
+    has_new_uninitialized: true,
+    can_initialize: "true",
+    recovery_status: "fresh",
+  },
+  {
+    has_new_uninitialized: true,
+    can_initialize: true,
+    recovery_status: "unexpected",
+  },
+]) {
+  assert.equal(
+    getInitializationActionView(unsafeInput).visible,
+    false,
+    "missing, malformed, or unknown initialization authority must fail closed"
+  );
+}
 
 console.log("diff-confirm recovery tests passed");

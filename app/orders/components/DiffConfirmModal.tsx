@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  getInitializationActionView,
   shouldShowDiffConfirmAction,
   type DiffRecoveryStatus,
 } from "./diff-confirm-view-policy";
@@ -27,6 +28,7 @@ export type DiffResult = {
   recovery_message?: string;
   recovery_status?: DiffRecoveryStatus;
   can_confirm?: boolean;
+  can_initialize?: boolean;
   has_fetch_failures?: boolean;
   failed_unique_keys?: string[];
   diff_summary: DiffItem[];
@@ -71,6 +73,11 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     diff_summary,
   } = diffResult;
   const showConfirmAction = shouldShowDiffConfirmAction(diffResult);
+  const initializationAction = getInitializationActionView({
+    ...diffResult,
+    requires_reload: initRetryRequiresReload,
+    is_processing: isProcessing,
+  });
 
   /** 差分確認APIを呼び出して完了する */
   const handleConfirm = async () => {
@@ -149,7 +156,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
           )}
 
         {/* パターン3：未初期化注文あり */}
-        {has_new_uninitialized && (
+        {initializationAction.visible && (
           <>
             <p className="text-sm text-amber-700 bg-amber-50 rounded p-3">
               {new_uninitialized_count === null ? (
@@ -162,16 +169,12 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
             {error && <p className="text-xs text-red-600">{error}</p>}
             <button
               type="button"
-              disabled={isProcessing || initRetryRequiresReload}
+              disabled={initializationAction.disabled}
               onClick={handleInitAndRefetch}
               className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
                          disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isProcessing
-                ? "処理中..."
-                : initRetryRequiresReload
-                  ? "再読み込み後に状態を確認してください"
-                  : "初期化を実行する"}
+              {initializationAction.label}
             </button>
           </>
         )}

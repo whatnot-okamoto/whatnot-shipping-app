@@ -61,6 +61,7 @@ type DiffRecoveryApiResponse = {
     refetch_cycle_id: string;
     review_status: "fresh" | "resuming_partial" | "conflict" | "confirmed";
     can_confirm: boolean;
+    can_initialize?: unknown;
     remaining_diff_count: number;
     remaining_diff_summary: DiffResult["diff_summary"];
     first_absence_count: number;
@@ -203,6 +204,10 @@ export default function OrdersPage() {
             review.cycle_not_in_open_orders_count,
           recovery_status: review.review_status,
           can_confirm: review.can_confirm,
+          can_initialize:
+            typeof review.can_initialize === "boolean"
+              ? review.can_initialize
+              : undefined,
           recovery_message: review.message,
           has_fetch_failures: review.has_fetch_failures,
           failed_unique_keys: review.failed_unique_keys,

@@ -77,6 +77,7 @@ export type DiffRecoveryReview = {
   phase: RefetchState["phase"] | "legacy";
   review_status: "fresh" | "resuming_partial" | "conflict" | "confirmed";
   can_confirm: boolean;
+  can_initialize: boolean;
   processed_details_fully_recoverable: boolean;
   diff_confirmed_flag: boolean;
   remaining_diff_count: number;
@@ -93,6 +94,27 @@ export type DiffRecoveryReview = {
   details_recovery: "full" | "remaining_only" | "none";
   message: string;
 };
+
+export function canInitializeDiffReview(
+  review: Pick<
+    DiffRecoveryReview,
+    | "refetch_cycle_id"
+    | "phase"
+    | "review_status"
+    | "can_confirm"
+    | "new_uninitialized_count"
+  >,
+  requestedCycleId: string = review.refetch_cycle_id
+): boolean {
+  return (
+    review.refetch_cycle_id === requestedCycleId &&
+    review.phase === "awaiting_initialization" &&
+    review.review_status === "fresh" &&
+    review.can_confirm === false &&
+    Number.isSafeInteger(review.new_uninitialized_count) &&
+    Number(review.new_uninitialized_count) > 0
+  );
+}
 
 type ResolvedUninitializedAudit = {
   cycleId: string;
@@ -234,7 +256,7 @@ function classifyRecoveryState(
       processedDetailsFullyRecoverable: false,
       detailsRecovery: "none",
       message:
-        "差分状態を安全に自動復旧できません。確認ボタンを押さず、管理者へ連絡してください。",
+        "保存されている差分情報と注文状態の整合性を安全に確認できないため、この画面では初期化・差分確認を実行できません。操作せず管理者へ連絡してください。",
     };
   }
 
@@ -321,11 +343,12 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
       : state.has_new_uninitialized
         ? null
         : 0;
-  return {
+  const review: DiffRecoveryReview = {
     refetch_cycle_id: state.refetch_cycle_id,
     phase: state.phase ?? "legacy",
     review_status: classification.reviewStatus,
     can_confirm: classification.canConfirm,
+    can_initialize: false,
     processed_details_fully_recoverable:
       classification.processedDetailsFullyRecoverable,
     diff_confirmed_flag: state.diff_confirmed_flag,
@@ -343,6 +366,8 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
     details_recovery: classification.detailsRecovery,
     message: classification.message,
   };
+  review.can_initialize = canInitializeDiffReview(review);
+  return review;
 }
 
 export type ConfirmDiffResult =

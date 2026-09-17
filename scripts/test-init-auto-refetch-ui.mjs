@@ -3,12 +3,17 @@ import assert from "node:assert/strict";
 const { runInitAndRefetch } = await import(
   "../app/orders/components/init-and-refetch-flow.ts"
 );
+const { getInitializationActionView } = await import(
+  "../app/orders/components/diff-confirm-view-policy.ts"
+);
 
 const repeatedUninitializedResult = {
   refetch_cycle_id: "cycle-next",
   has_diff: true,
   has_new_uninitialized: true,
   new_uninitialized_count: 1,
+  recovery_status: "fresh",
+  can_initialize: true,
   first_absence_count: 23,
   diff_summary: [],
 };
@@ -48,6 +53,7 @@ const completedResult = await runInitAndRefetch("cycle-complete", async (input) 
       ...repeatedUninitializedResult,
       has_new_uninitialized: false,
       new_uninitialized_count: 0,
+      can_initialize: false,
     },
   });
 });
@@ -67,6 +73,7 @@ const emptyCurrentOrdersResult = await runInitAndRefetch(
         has_diff: false,
         has_new_uninitialized: false,
         new_uninitialized_count: 0,
+        can_initialize: false,
         resolved_uninitialized_count: 11,
         resolved_uninitialized_reason: "not_in_current_open_orders",
       },
@@ -104,6 +111,7 @@ const malformedEmptyAudit = await runInitAndRefetch(
         ...repeatedUninitializedResult,
         has_new_uninitialized: false,
         new_uninitialized_count: 0,
+        can_initialize: false,
         resolved_uninitialized_count: 11,
       },
     });
@@ -124,6 +132,42 @@ assert.deepEqual(explicitInitFailure, {
   requiresReload: true,
 });
 
+let unsafeInitCalls = 0;
+const unsafeInitializationResult = await runInitAndRefetch(
+  "cycle-stale-ui",
+  async () => {
+    unsafeInitCalls += 1;
+    return Response.json(
+      {
+        success: false,
+        error_code: "unsafe_initialization_state",
+        message:
+          "保存状態の整合性を安全に確認できません。再読み込みしても続く場合は管理者へ連絡してください。",
+      },
+      { status: 409 }
+    );
+  }
+);
+assert.equal(unsafeInitCalls, 1, "unsafe init must not continue to automatic refetch");
+assert.equal(unsafeInitializationResult.success, false);
+assert.equal(unsafeInitializationResult.requiresReload, true);
+assert.match(unsafeInitializationResult.error, /再読み込み/);
+assert.match(unsafeInitializationResult.error, /管理者/);
+assert.deepEqual(
+  getInitializationActionView({
+    has_new_uninitialized: true,
+    can_initialize: true,
+    recovery_status: "fresh",
+    requires_reload: unsafeInitializationResult.requiresReload,
+  }),
+  {
+    visible: true,
+    disabled: true,
+    label: "再読み込み後に状態を確認してください",
+  },
+  "a stale-UI 409 must not restore a retryable initialization button"
+);
+
 let reloadAttempt = 0;
 const partialThenReloadedResume = async (input) => {
   if (String(input) === "/api/orders/init") {
@@ -143,6 +187,7 @@ const partialThenReloadedResume = async (input) => {
       ...repeatedUninitializedResult,
       has_new_uninitialized: false,
       new_uninitialized_count: 0,
+      can_initialize: false,
     },
   });
 };
@@ -189,6 +234,7 @@ const contradictoryHttpFailure = await runInitAndRefetch(
           ...repeatedUninitializedResult,
           has_new_uninitialized: false,
           new_uninitialized_count: 0,
+          can_initialize: false,
         },
       },
       { status: 500 }

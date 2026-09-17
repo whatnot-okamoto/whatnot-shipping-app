@@ -212,6 +212,9 @@ async function completeEmptyCurrentOrdersRefetch(
       diff_summary: [],
       resolved_uninitialized_count: candidate.uninitializedCount,
       resolved_uninitialized_reason: "not_in_current_open_orders",
+      recovery_status: "fresh",
+      can_confirm: true,
+      can_initialize: false,
     },
   });
 }
@@ -564,6 +567,9 @@ export async function POST(req: Request) {
         cycle_not_in_open_orders_count: disappeared.length,
         has_fetch_failures: failedUniqueKeys.length > 0,
         failed_unique_keys: failedUniqueKeys,
+        recovery_status: "fresh",
+        can_confirm: !hasNewUninitialized,
+        can_initialize: hasNewUninitialized,
         diff_summary: diffSummary,
       },
     });

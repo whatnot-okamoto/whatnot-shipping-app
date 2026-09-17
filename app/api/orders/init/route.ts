@@ -15,6 +15,10 @@ import { requireAuth } from "@/lib/auth";
 import { redis } from "@/lib/upstash";
 import { getRefetchState, setRefetchStateFenced } from "@/lib/refetch-store";
 import {
+  canInitializeDiffReview,
+  getDiffRecoveryReview,
+} from "@/lib/order-diff-confirmation";
+import {
   acquireWorkflowLease,
   ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE,
   releaseWorkflowLease,
@@ -26,6 +30,20 @@ export const maxDuration = 300;
 export const INIT_BASE_LIST_TIMEOUT_MS = 30_000;
 export const INIT_BASE_DETAIL_TIMEOUT_MS = 45_000;
 export const INIT_BASE_PHASE_TIMEOUT_MS = 180_000;
+
+const UNSAFE_INITIALIZATION_MESSAGE =
+  "保存状態の整合性を安全に確認できません。再読み込みしても続く場合は管理者へ連絡してください。";
+
+function unsafeInitializationResponse(): Response {
+  return Response.json(
+    {
+      success: false,
+      error_code: "unsafe_initialization_state",
+      message: UNSAFE_INITIALIZATION_MESSAGE,
+    },
+    { status: 409 }
+  );
+}
 
 async function withBaseOperationTimeout<T>(
   phaseSignal: AbortSignal,
@@ -67,6 +85,19 @@ export async function POST(req: Request) {
     // Initial bootstrap remains body-less; recovery init carries a cycle id.
   }
 
+  // Recovery init is authorized from the same server-side review returned by
+  // GET /api/orders/diff-confirm. Reject before creating a lease so an
+  // already-unsafe state causes no Redis writes at all.
+  if (requestedCycleId !== null) {
+    const preflightReview = await getDiffRecoveryReview();
+    if (
+      !preflightReview ||
+      !canInitializeDiffReview(preflightReview, requestedCycleId)
+    ) {
+      return unsafeInitializationResponse();
+    }
+  }
+
   const lease = await acquireWorkflowLease("init", requestedCycleId);
   if (!lease) {
     return Response.json(
@@ -80,6 +111,15 @@ export async function POST(req: Request) {
   }
 
   try {
+    if (requestedCycleId !== null) {
+      const fencedReview = await getDiffRecoveryReview();
+      if (
+        !fencedReview ||
+        !canInitializeDiffReview(fencedReview, requestedCycleId)
+      ) {
+        return unsafeInitializationResponse();
+      }
+    }
     const [refetchState, indexedOrders, pendingKeys, currentSessionId] =
       await Promise.all([
         getRefetchState(),
@@ -95,8 +135,7 @@ export async function POST(req: Request) {
       currentSessionId === null;
     const isSameCycleRecoveryInit =
       refetchState?.has_new_uninitialized === true &&
-      (refetchState.phase === "awaiting_initialization" ||
-        refetchState.phase === undefined) &&
+      refetchState.phase === "awaiting_initialization" &&
       requestedCycleId !== null &&
       requestedCycleId === refetchState.refetch_cycle_id &&
       currentSessionId === null;
