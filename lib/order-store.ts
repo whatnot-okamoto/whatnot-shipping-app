@@ -484,6 +484,90 @@ export async function getBundleStates(
 }
 
 /**
+ * index:ordersに存在する注文が、初期化完了に必要なU1・snapshot・U2・U4を
+ * 実際に保持しているかを一括確認する。現在のinitはindex:ordersを最後に
+ * 書くが、旧pipelineの個別失敗や後発欠損ではindexだけ残り得るため、
+ * index単独を完了markerとして扱わない。
+ */
+export async function getIncompleteOrderInitializationKeys(
+  uniqueKeys: string[]
+): Promise<Set<string>> {
+  const incomplete = new Set<string>();
+  if (uniqueKeys.length === 0) return incomplete;
+
+  const corePipe = redis.pipeline();
+  for (const uniqueKey of uniqueKeys) {
+    corePipe.get(`order:${uniqueKey}`);
+    corePipe.get(`order_snapshot:${uniqueKey}`);
+    corePipe.get(`index:picking:${uniqueKey}`);
+  }
+  const coreResults = await corePipe.exec();
+  const completeCore: Array<{
+    uniqueKey: string;
+    bundleGroupId: string;
+    itemIds: number[];
+  }> = [];
+
+  uniqueKeys.forEach((uniqueKey, index) => {
+    const resultOffset = index * 3;
+    const u1 = parseRedisValue<U1Data>(coreResults[resultOffset]);
+    const snapshot = parseRedisValue<OrderSnapshot>(coreResults[resultOffset + 1]);
+    const itemIds = parseRedisValue<number[]>(coreResults[resultOffset + 2]);
+    if (
+      !u1 ||
+      !snapshot?.bundle_group_id ||
+      !Array.isArray(itemIds) ||
+      !itemIds.every((itemId) => Number.isSafeInteger(itemId))
+    ) {
+      incomplete.add(uniqueKey);
+      return;
+    }
+    completeCore.push({
+      uniqueKey,
+      bundleGroupId: snapshot.bundle_group_id,
+      itemIds,
+    });
+  });
+
+  if (completeCore.length === 0) return incomplete;
+
+  const relationPipe = redis.pipeline();
+  for (const candidate of completeCore) {
+    relationPipe.get(`bundle:${candidate.bundleGroupId}`);
+    for (const itemId of candidate.itemIds) {
+      relationPipe.get(`picking:${itemId}`);
+    }
+  }
+  const relationResults = await relationPipe.exec();
+  let relationOffset = 0;
+  for (const candidate of completeCore) {
+    const bundle = parseRedisValue<U2Data>(relationResults[relationOffset]);
+    relationOffset += 1;
+    const hasBundleMembership =
+      bundle?.bundle_group_id === candidate.bundleGroupId &&
+      Array.isArray(bundle.order_unique_keys) &&
+      bundle.order_unique_keys.includes(candidate.uniqueKey);
+    let hasAllU4 = true;
+    for (const itemId of candidate.itemIds) {
+      const u4 = parseRedisValue<U4Data>(relationResults[relationOffset]);
+      relationOffset += 1;
+      if (
+        !u4 ||
+        u4.order_item_id !== itemId ||
+        u4.order_unique_key !== candidate.uniqueKey
+      ) {
+        hasAllU4 = false;
+      }
+    }
+    if (!hasBundleMembership || !hasAllU4) {
+      incomplete.add(candidate.uniqueKey);
+    }
+  }
+
+  return incomplete;
+}
+
+/**
  * U4: 注文に紐づくピッキング進捗一覧を取得。
  * index:picking:{unique_key} → item_id リスト → 各 picking:{item_id} の順で参照する。
  */

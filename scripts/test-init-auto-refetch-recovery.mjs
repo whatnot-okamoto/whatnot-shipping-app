@@ -198,6 +198,95 @@ assert.ok(
   "the BASE phase must leave time inside the route runtime ceiling for Redis persistence and response"
 );
 
+// RED: index:orders is a completion marker only for the current ordered write
+// path. Legacy or externally damaged state may retain the index while U1,
+// snapshot, or U4 is absent. Such an order must be fetched and repaired rather
+// than skipped and marked ready for automatic refetch.
+prepared = await prepareAbsencesAndNewOrders({
+  historicalCount: 1,
+  newCount: 1,
+  scenario: "INDEX-ONLY",
+});
+const indexOnlyOrder = prepared.newOrders[0];
+await redis.sadd("index:orders", indexOnlyOrder.unique_key);
+const indexOnlyDetailCalls = baseFake.getWorkflowDetailCallCount();
+const indexOnlyRepairResponse = await withinGuard(
+  post(initRoute, "/api/orders/init", {
+    refetch_cycle_id: prepared.cycleId,
+  }),
+  "index-only-init-repair",
+  2_000
+);
+const indexOnlyRepairBody = await indexOnlyRepairResponse.json();
+assert.equal(indexOnlyRepairBody.success, true);
+assert.equal(indexOnlyRepairBody.initialized, 1);
+assert.equal(
+  baseFake.getWorkflowDetailCallCount() - indexOnlyDetailCalls,
+  1
+);
+assert.ok(await redis.get(`order:${indexOnlyOrder.unique_key}`));
+assert.ok(await redis.get(`order_snapshot:${indexOnlyOrder.unique_key}`));
+assert.ok(await redis.get(`picking:${indexOnlyOrder.order_items[0].order_item_id}`));
+assert.equal((await readRefetchState()).post_init_refetch_ready, true);
+const indexOnlyAutomaticRefetch = await withinGuard(
+  post(refetchRoute, "/api/orders/refetch", {
+    source_refetch_cycle_id: prepared.cycleId,
+  }),
+  "index-only-repair-auto-refetch",
+  2_000
+);
+const indexOnlyAutomaticBody = await indexOnlyAutomaticRefetch.json();
+assert.equal(indexOnlyAutomaticBody.success, true);
+assert.equal(indexOnlyAutomaticBody.diff_result.has_new_uninitialized, false);
+const indexOnlyListResponse = await orderListRoute.GET(
+  new Request("http://local.test/api/orders/list")
+);
+const indexOnlyListBody = await indexOnlyListResponse.json();
+assert.equal(indexOnlyListBody.success, true);
+assert.deepEqual(
+  indexOnlyListBody.orders.map((order) => order.unique_key),
+  [indexOnlyOrder.unique_key]
+);
+assert.equal(indexOnlyListBody.orders[0].needs_initialization, false);
+
+prepared = await prepareAbsencesAndNewOrders({
+  historicalCount: 1,
+  newCount: 1,
+  scenario: "SNAPSHOT-MISSING",
+});
+const snapshotMissingOrder = prepared.newOrders[0];
+await initializeOrderData([snapshotMissingOrder]);
+const snapshotMissingU1Raw = await redis.get(`order:${snapshotMissingOrder.unique_key}`);
+const snapshotMissingU1 =
+  typeof snapshotMissingU1Raw === "string"
+    ? JSON.parse(snapshotMissingU1Raw)
+    : snapshotMissingU1Raw;
+await redis.set(
+  `order:${snapshotMissingOrder.unique_key}`,
+  JSON.stringify({ ...snapshotMissingU1, app_memo: "preserve-index-repair" })
+);
+await redis.del(`order_snapshot:${snapshotMissingOrder.unique_key}`);
+const snapshotRepairDetailCalls = baseFake.getWorkflowDetailCallCount();
+const snapshotRepairResponse = await withinGuard(
+  post(initRoute, "/api/orders/init", {
+    refetch_cycle_id: prepared.cycleId,
+  }),
+  "snapshot-missing-init-repair",
+  2_000
+);
+const snapshotRepairBody = await snapshotRepairResponse.json();
+assert.equal(snapshotRepairBody.success, true);
+assert.equal(snapshotRepairBody.initialized, 1);
+assert.equal(
+  baseFake.getWorkflowDetailCallCount() - snapshotRepairDetailCalls,
+  1
+);
+assert.ok(await redis.get(`order_snapshot:${snapshotMissingOrder.unique_key}`));
+const repairedU1Raw = await redis.get(`order:${snapshotMissingOrder.unique_key}`);
+const repairedU1 = typeof repairedU1Raw === "string" ? JSON.parse(repairedU1Raw) : repairedU1Raw;
+assert.equal(repairedU1.app_memo, "preserve-index-repair");
+assert.equal((await readRefetchState()).post_init_refetch_ready, true);
+
 // The whole BASE phase is also finite. Details that each fit their own budget
 // may cumulatively exhaust the phase; completed details are persisted and only
 // the remaining count is exposed for a reload-based resume.

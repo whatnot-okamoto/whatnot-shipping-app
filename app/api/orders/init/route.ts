@@ -5,7 +5,10 @@
 // このRoute Handler が橋渡しする（責務の分離）。
 
 import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
-import { initializeOrderData } from "@/lib/order-store";
+import {
+  getIncompleteOrderInitializationKeys,
+  initializeOrderData,
+} from "@/lib/order-store";
 import type { BaseOrder } from "@/lib/base-api";
 import { requireAuth } from "@/lib/auth";
 import { redis } from "@/lib/upstash";
@@ -120,8 +123,17 @@ export async function POST(req: Request) {
       (signal) => fetchOrderedOrders({ signal })
     );
     const indexedOrderSet = new Set(indexedOrders);
+    const indexedCurrentKeys = summaries
+      .map((summary) => summary.unique_key)
+      .filter((uniqueKey) => indexedOrderSet.has(uniqueKey));
+    const incompleteIndexedKeys = await getIncompleteOrderInitializationKeys(
+      indexedCurrentKeys
+    );
+    await renewWorkflowLeaseIfDue(lease);
     const uninitializedSummaries = summaries.filter(
-      (summary) => !indexedOrderSet.has(summary.unique_key)
+      (summary) =>
+        !indexedOrderSet.has(summary.unique_key) ||
+        incompleteIndexedKeys.has(summary.unique_key)
     );
 
     // 手順2: 未初期化unique_keyだけをシリアルフェッチ。
