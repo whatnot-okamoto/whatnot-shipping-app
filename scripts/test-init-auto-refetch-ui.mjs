@@ -53,6 +53,65 @@ const completedResult = await runInitAndRefetch("cycle-complete", async (input) 
 });
 assert.equal(completedResult.success, true);
 
+const emptyCurrentOrdersResult = await runInitAndRefetch(
+  "cycle-empty-source",
+  async (input) => {
+    if (String(input) === "/api/orders/init") {
+      return Response.json({ success: true, status: "empty_current_orders" });
+    }
+    return Response.json({
+      success: true,
+      diff_result: {
+        ...repeatedUninitializedResult,
+        refetch_cycle_id: "cycle-empty-current",
+        has_diff: false,
+        has_new_uninitialized: false,
+        new_uninitialized_count: 0,
+        resolved_uninitialized_count: 11,
+        resolved_uninitialized_reason: "not_in_current_open_orders",
+      },
+    });
+  }
+);
+assert.equal(emptyCurrentOrdersResult.success, true);
+assert.equal(
+  emptyCurrentOrdersResult.diffResult.resolved_uninitialized_count,
+  11
+);
+
+const orderAppearedAfterEmptyInit = await runInitAndRefetch(
+  "cycle-empty-race",
+  async (input) => {
+    if (String(input) === "/api/orders/init") {
+      return Response.json({ success: true, status: "empty_current_orders" });
+    }
+    return Response.json({ success: true, diff_result: repeatedUninitializedResult });
+  }
+);
+assert.equal(orderAppearedAfterEmptyInit.success, false);
+assert.equal(orderAppearedAfterEmptyInit.requiresReload, true);
+assert.match(orderAppearedAfterEmptyInit.error, /未初期化|再読み込み/);
+
+const malformedEmptyAudit = await runInitAndRefetch(
+  "cycle-empty-malformed-audit",
+  async (input) => {
+    if (String(input) === "/api/orders/init") {
+      return Response.json({ success: true, status: "empty_current_orders" });
+    }
+    return Response.json({
+      success: true,
+      diff_result: {
+        ...repeatedUninitializedResult,
+        has_new_uninitialized: false,
+        new_uninitialized_count: 0,
+        resolved_uninitialized_count: 11,
+      },
+    });
+  }
+);
+assert.equal(malformedEmptyAudit.success, false);
+assert.equal(malformedEmptyAudit.requiresReload, true);
+
 const explicitInitFailure = await runInitAndRefetch("cycle-init-failure", async () =>
   Response.json(
     { success: false, message: "fixture init failure" },

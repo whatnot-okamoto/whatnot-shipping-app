@@ -12,6 +12,8 @@ const stalledKeys = new Set<string>();
 let fetchFailureMessage = "fixture fetch failure";
 let orderListStalls = false;
 let orderListCalls = 0;
+let orderListFailure: Error | null = null;
+let orderListRawResult: unknown = undefined;
 let detailCalls = 0;
 let detailDelayMs = 0;
 let orderListGate:
@@ -59,10 +61,20 @@ export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   fetchFailureMessage = "fixture fetch failure";
   orderListStalls = false;
   orderListCalls = 0;
+  orderListFailure = null;
+  orderListRawResult = undefined;
   detailCalls = 0;
   detailDelayMs = 0;
   orderListGate = null;
   detailGate = null;
+}
+
+export function setWorkflowOrderListFailure(error: Error | null): void {
+  orderListFailure = error;
+}
+
+export function setWorkflowOrderListRawResult(value: unknown): void {
+  orderListRawResult = value;
 }
 
 export function installWorkflowOrderListGate(): {
@@ -139,6 +151,10 @@ export async function fetchOrderedOrders(options?: {
   }
   if (orderListStalls) {
     return waitForAbort(options?.signal);
+  }
+  if (orderListFailure) throw orderListFailure;
+  if (orderListRawResult !== undefined) {
+    return structuredClone(orderListRawResult) as BaseOrderSummary[];
   }
   return orders.map((order) => ({
     unique_key: order.unique_key,

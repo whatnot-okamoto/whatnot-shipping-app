@@ -29,6 +29,15 @@ export type RefetchState = {
   new_uninitialized_count?: number;
   first_absence_count?: number;
   post_init_refetch_ready?: boolean;
+  /** initでBASE現在注文0件を観測し、authorized refetchの再確認を待つ。 */
+  empty_init_source_cycle_id?: string;
+  empty_init_uninitialized_count?: number;
+  empty_init_checked_at?: string;
+  /** initとauthorized refetchの双方で0件を確認した集約監査情報。 */
+  resolved_uninitialized_cycle_id?: string;
+  resolved_uninitialized_count?: number;
+  resolved_uninitialized_reason?: "not_in_current_open_orders";
+  resolved_uninitialized_checked_at?: string;
 };
 
 export type RefetchOrderResult = {

@@ -66,6 +66,8 @@ type DiffRecoveryApiResponse = {
     first_absence_count: number;
     cycle_not_in_open_orders_count: number;
     new_uninitialized_count: number | null;
+    resolved_uninitialized_count: number | null;
+    resolved_uninitialized_reason: "not_in_current_open_orders" | null;
     has_fetch_failures: boolean;
     failed_unique_keys: string[];
     message: string;
@@ -192,6 +194,10 @@ export default function OrdersPage() {
             review.new_uninitialized_count === null ||
             review.new_uninitialized_count > 0,
           new_uninitialized_count: review.new_uninitialized_count,
+          resolved_uninitialized_count:
+            review.resolved_uninitialized_count,
+          resolved_uninitialized_reason:
+            review.resolved_uninitialized_reason,
           first_absence_count: review.first_absence_count,
           cycle_not_in_open_orders_count:
             review.cycle_not_in_open_orders_count,

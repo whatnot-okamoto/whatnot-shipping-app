@@ -74,6 +74,19 @@ function isDiffResultResponse(value: unknown): boolean {
       return false;
     }
   }
+  const hasResolvedCount = value.resolved_uninitialized_count !== undefined;
+  const hasResolvedReason = value.resolved_uninitialized_reason !== undefined;
+  if (hasResolvedCount !== hasResolvedReason) return false;
+  if (
+    hasResolvedCount &&
+    !(
+      isNonNegativeSafeInteger(value.resolved_uninitialized_count) &&
+      Number(value.resolved_uninitialized_count) > 0 &&
+      value.resolved_uninitialized_reason === "not_in_current_open_orders"
+    )
+  ) {
+    return false;
+  }
   if (
     value.failed_unique_keys !== undefined &&
     (!Array.isArray(value.failed_unique_keys) ||
@@ -132,7 +145,10 @@ export async function runInitAndRefetch<TDiffResult>(
         responseErrorMessage(initRecord) || RELOAD_REQUIRED_ERROR
       );
     }
-    if (initData.status !== "completed") {
+    if (
+      initData.status !== "completed" &&
+      initData.status !== "empty_current_orders"
+    ) {
       return failure(RELOAD_REQUIRED_ERROR);
     }
 

@@ -20,6 +20,8 @@ export type DiffResult = {
   has_diff: boolean;
   has_new_uninitialized: boolean;
   new_uninitialized_count: number | null;
+  resolved_uninitialized_count?: number | null;
+  resolved_uninitialized_reason?: "not_in_current_open_orders" | null;
   first_absence_count?: number;
   cycle_not_in_open_orders_count?: number;
   recovery_message?: string;
@@ -58,6 +60,8 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     has_diff,
     has_new_uninitialized,
     new_uninitialized_count,
+    resolved_uninitialized_count = null,
+    resolved_uninitialized_reason = null,
     first_absence_count = 0,
     cycle_not_in_open_orders_count = 0,
     recovery_message,
@@ -136,6 +140,13 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
           cycleNotInOpenOrdersCount={cycle_not_in_open_orders_count}
           recoveryStatus={recovery_status}
         />
+
+        {resolved_uninitialized_reason === "not_in_current_open_orders" &&
+          resolved_uninitialized_count !== null && (
+            <p className="text-sm text-blue-800 bg-blue-50 rounded p-3">
+              前回の未初期化注文 {resolved_uninitialized_count} 件は、現在のBASE未対応注文一覧に存在しないため取り込みませんでした。出荷済み・キャンセル済みなどの理由は判定していません。
+            </p>
+          )}
 
         {/* パターン3：未初期化注文あり */}
         {has_new_uninitialized && (

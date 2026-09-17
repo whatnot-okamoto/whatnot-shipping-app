@@ -10,6 +10,7 @@ import {
   initializeOrderData,
 } from "@/lib/order-store";
 import type { BaseOrder } from "@/lib/base-api";
+import { isBaseOrderSummaryList } from "@/lib/base-order-summary-validation";
 import { requireAuth } from "@/lib/auth";
 import { redis } from "@/lib/upstash";
 import { getRefetchState, setRefetchStateFenced } from "@/lib/refetch-store";
@@ -114,14 +115,64 @@ export async function POST(req: Request) {
     // 一覧・詳細1件にも個別上限を設け、複数の正常応答が単一の短い
     // signalを共有して誤って打ち切られないようにする。残り時間は、
     // 取得済み注文のRedis保存、lease付き状態更新、応答に確保する。
-    const basePhaseSignal = AbortSignal.timeout(INIT_BASE_PHASE_TIMEOUT_MS);
+    const basePhaseSignal = AbortSignal.any([
+      AbortSignal.timeout(INIT_BASE_PHASE_TIMEOUT_MS),
+      req.signal,
+    ]);
 
     // 手順1: 注文一覧取得（サマリのみ）
-    const summaries = await withBaseOperationTimeout(
+    const summariesResult: unknown = await withBaseOperationTimeout(
       basePhaseSignal,
       INIT_BASE_LIST_TIMEOUT_MS,
       (signal) => fetchOrderedOrders({ signal })
     );
+    if (!isBaseOrderSummaryList(summariesResult)) {
+      throw new Error("BASE order list response has an invalid shape");
+    }
+    const summaries = summariesResult.filter(
+      (summary) =>
+        summary.dispatch_status === "ordered" &&
+        summary.dispatched === null &&
+        summary.terminated === false
+    );
+
+    if (isSameCycleRecoveryInit && summaries.length === 0) {
+      const unresolvedCount = refetchState?.new_uninitialized_count;
+      if (!Number.isSafeInteger(unresolvedCount) || Number(unresolvedCount) <= 0) {
+        return Response.json(
+          {
+            success: false,
+            error_code: "uninitialized_count_unavailable",
+            message:
+              "前回の未初期化件数を確認できません。状態を変更せず停止しました。",
+          },
+          { status: 409 }
+        );
+      }
+      const checkedAt = new Date().toISOString();
+      await setRefetchStateFenced(lease, {
+        ...refetchState,
+        phase: "awaiting_initialization",
+        diff_confirmed_flag: false,
+        post_init_refetch_ready: true,
+        empty_init_source_cycle_id: refetchState.refetch_cycle_id,
+        empty_init_uninitialized_count: unresolvedCount,
+        empty_init_checked_at: checkedAt,
+      });
+      return Response.json({
+        success: true,
+        status: "empty_current_orders",
+        initialized: 0,
+        skipped: 0,
+        failed_unique_keys: [],
+        warnings: [],
+        u1Count: 0,
+        u2Count: 0,
+        u4Count: 0,
+        snapshotCount: 0,
+        indexOrdersAdded: 0,
+      });
+    }
     const indexedOrderSet = new Set(indexedOrders);
     const indexedCurrentKeys = summaries
       .map((summary) => summary.unique_key)

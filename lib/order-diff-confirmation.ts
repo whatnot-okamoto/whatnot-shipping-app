@@ -84,11 +84,53 @@ export type DiffRecoveryReview = {
   first_absence_count: number;
   cycle_not_in_open_orders_count: number;
   new_uninitialized_count: number | null;
+  resolved_uninitialized_cycle_id: string | null;
+  resolved_uninitialized_count: number | null;
+  resolved_uninitialized_reason: "not_in_current_open_orders" | null;
+  resolved_uninitialized_checked_at: string | null;
   has_fetch_failures: boolean;
   failed_unique_keys: string[];
   details_recovery: "full" | "remaining_only" | "none";
   message: string;
 };
+
+type ResolvedUninitializedAudit = {
+  cycleId: string;
+  count: number;
+  reason: "not_in_current_open_orders";
+  checkedAt: string;
+};
+
+function readResolvedUninitializedAudit(
+  state: RefetchState
+): { audit: ResolvedUninitializedAudit | null; malformed: boolean } {
+  const hasAnyField =
+    state.resolved_uninitialized_cycle_id !== undefined ||
+    state.resolved_uninitialized_count !== undefined ||
+    state.resolved_uninitialized_reason !== undefined ||
+    state.resolved_uninitialized_checked_at !== undefined;
+  if (!hasAnyField) return { audit: null, malformed: false };
+  if (
+    typeof state.resolved_uninitialized_cycle_id !== "string" ||
+    state.resolved_uninitialized_cycle_id.length === 0 ||
+    !Number.isSafeInteger(state.resolved_uninitialized_count) ||
+    Number(state.resolved_uninitialized_count) <= 0 ||
+    state.resolved_uninitialized_reason !== "not_in_current_open_orders" ||
+    typeof state.resolved_uninitialized_checked_at !== "string" ||
+    state.resolved_uninitialized_checked_at.length === 0
+  ) {
+    return { audit: null, malformed: true };
+  }
+  return {
+    audit: {
+      cycleId: state.resolved_uninitialized_cycle_id,
+      count: Number(state.resolved_uninitialized_count),
+      reason: state.resolved_uninitialized_reason,
+      checkedAt: state.resolved_uninitialized_checked_at,
+    },
+    malformed: false,
+  };
+}
 
 export type DiffRecoveryItem = {
   unique_key: string;
@@ -231,7 +273,18 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
   if (!state?.refetch_cycle_id) return null;
   const keys = await redis.smembers(PENDING_INDEX_KEY);
   const pairs = await readRecoveryPairs(keys, state);
-  const classification = classifyRecoveryState(state, pairs);
+  let classification = classifyRecoveryState(state, pairs);
+  const resolvedAudit = readResolvedUninitializedAudit(state);
+  if (resolvedAudit.malformed) {
+    classification = {
+      reviewStatus: "conflict",
+      canConfirm: false,
+      processedDetailsFullyRecoverable: false,
+      detailsRecovery: "none",
+      message:
+        "未初期化注文の確認履歴を安全に復元できません。確認ボタンを押さず、管理者へ連絡してください。",
+    };
+  }
   const firstAbsenceCount =
     typeof state.first_absence_count === "number"
       ? state.first_absence_count
@@ -281,6 +334,10 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
     first_absence_count: firstAbsenceCount,
     cycle_not_in_open_orders_count: cycleNotInOpenOrdersCount,
     new_uninitialized_count: newUninitializedCount,
+    resolved_uninitialized_cycle_id: resolvedAudit.audit?.cycleId ?? null,
+    resolved_uninitialized_count: resolvedAudit.audit?.count ?? null,
+    resolved_uninitialized_reason: resolvedAudit.audit?.reason ?? null,
+    resolved_uninitialized_checked_at: resolvedAudit.audit?.checkedAt ?? null,
     has_fetch_failures: failedUniqueKeys.length > 0,
     failed_unique_keys: failedUniqueKeys,
     details_recovery: classification.detailsRecovery,

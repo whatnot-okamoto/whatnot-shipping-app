@@ -5,6 +5,7 @@
 import { randomUUID } from "crypto";
 import { redis } from "@/lib/upstash";
 import { fetchOrderedOrders, fetchOrderDetail } from "@/lib/base-api";
+import { isBaseOrderSummaryList } from "@/lib/base-order-summary-validation";
 import {
   getOrderSnapshot,
   getOrderSnapshots,
@@ -14,9 +15,11 @@ import {
 import {
   createInitialRefetchState,
   getRefetchState,
+  REFETCH_STATE_KEY,
   setRefetchStateFenced,
 } from "@/lib/refetch-store";
-import type { RefetchOrderResult } from "@/lib/refetch-store";
+import type { RefetchOrderResult, RefetchState } from "@/lib/refetch-store";
+import type { RedisMutation } from "@/lib/redis-like";
 import { requireAuth } from "@/lib/auth";
 import { getStaffReviewSnapshotChanges } from "@/lib/order-snapshot-diff";
 import { assessOrderForPdf } from "@/lib/pdf-order-assessment";
@@ -27,6 +30,7 @@ import {
   fencedMutate,
   releaseWorkflowLease,
   renewWorkflowLeaseIfDue,
+  type WorkflowLease,
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
 
@@ -40,9 +44,13 @@ export type DiffItem = {
 const REFETCH_BASE_REQUEST_TIMEOUT_MS = 15_000;
 
 async function withBaseRequestTimeout<T>(
-  operation: (signal: AbortSignal) => Promise<T>
+  operation: (signal: AbortSignal) => Promise<T>,
+  requestSignal?: AbortSignal
 ): Promise<T> {
-  const signal = AbortSignal.timeout(REFETCH_BASE_REQUEST_TIMEOUT_MS);
+  const timeoutSignal = AbortSignal.timeout(REFETCH_BASE_REQUEST_TIMEOUT_MS);
+  const signal = requestSignal
+    ? AbortSignal.any([timeoutSignal, requestSignal])
+    : timeoutSignal;
   return Promise.race([
     operation(signal),
     new Promise<T>((_, reject) => {
@@ -55,6 +63,157 @@ async function withBaseRequestTimeout<T>(
       signal.addEventListener("abort", rejectForTimeout, { once: true });
     }),
   ]);
+}
+
+type EmptyInitCandidate = {
+  sourceCycleId: string;
+  uninitializedCount: number;
+  initCheckedAt: string;
+};
+
+function filterBaseOpenOrders<T extends {
+  dispatch_status: string;
+  dispatched: number | null;
+  terminated: boolean;
+}>(orders: T[]): T[] {
+  return orders.filter(
+    (order) =>
+      order.dispatch_status === "ordered" &&
+      order.dispatched === null &&
+      order.terminated === false
+  );
+}
+
+function readEmptyInitCandidate(
+  state: RefetchState,
+  sourceCycleId: string | null
+): EmptyInitCandidate | null {
+  if (
+    state.empty_init_source_cycle_id !== sourceCycleId ||
+    typeof state.empty_init_source_cycle_id !== "string" ||
+    !Number.isSafeInteger(state.empty_init_uninitialized_count) ||
+    Number(state.empty_init_uninitialized_count) <= 0 ||
+    typeof state.empty_init_checked_at !== "string" ||
+    state.empty_init_checked_at.length === 0
+  ) {
+    return null;
+  }
+  return {
+    sourceCycleId: state.empty_init_source_cycle_id,
+    uninitializedCount: Number(state.empty_init_uninitialized_count),
+    initCheckedAt: state.empty_init_checked_at,
+  };
+}
+
+function hasAnyEmptyInitMarker(state: RefetchState): boolean {
+  return (
+    state.empty_init_source_cycle_id !== undefined ||
+    state.empty_init_uninitialized_count !== undefined ||
+    state.empty_init_checked_at !== undefined
+  );
+}
+
+async function completeEmptyCurrentOrdersRefetch(
+  candidate: EmptyInitCandidate,
+  lease: WorkflowLease
+): Promise<Response> {
+  const refetchCycleId = randomUUID();
+  const checkedAt = new Date().toISOString();
+  const [oldPendingKeys, indexKeys] = await Promise.all([
+    redis.smembers("index:order_snapshot_pending"),
+    redis.smembers("index:orders"),
+  ]);
+  const disappearedSnapshots = await getOrderSnapshots(indexKeys);
+  const pendingEntries: Array<[string, OrderSnapshot]> = [];
+  const orderResults: Record<string, RefetchOrderResult> = {};
+  let firstAbsenceCount = 0;
+
+  for (const key of indexKeys) {
+    const existingSnapshot = disappearedSnapshots.get(key);
+    if (existingSnapshot) {
+      const pending: OrderSnapshot = {
+        ...existingSnapshot,
+        pdf_verification_cycle_id: refetchCycleId,
+        open_order_presence: "not_in_open_orders",
+        pdf_generation_outcome: "blocked",
+        pdf_issue_codes: ["not_in_open_orders"],
+      };
+      pendingEntries.push([key, pending]);
+      if (existingSnapshot.open_order_presence !== "not_in_open_orders") {
+        firstAbsenceCount += 1;
+      }
+    }
+    orderResults[key] = {
+      status: "not_in_open_orders",
+      issues: ["not_in_open_orders"],
+    };
+  }
+
+  const nextState: RefetchState = {
+    refetch_done_flag: true,
+    diff_confirmed_flag: false,
+    refetched_at: checkedAt,
+    has_new_uninitialized: false,
+    refetch_cycle_id: refetchCycleId,
+    refetch_result: "complete",
+    phase: "awaiting_review",
+    new_uninitialized_count: 0,
+    first_absence_count: firstAbsenceCount,
+    post_init_refetch_ready: false,
+    order_results: orderResults,
+    resolved_uninitialized_cycle_id: candidate.sourceCycleId,
+    resolved_uninitialized_count: candidate.uninitializedCount,
+    resolved_uninitialized_reason: "not_in_current_open_orders",
+    resolved_uninitialized_checked_at: checkedAt,
+  };
+  const mutations: RedisMutation[] = [];
+  if (oldPendingKeys.length > 0) {
+    mutations.push({
+      type: "del",
+      keys: oldPendingKeys.map((key) => `order_snapshot_pending:${key}`),
+    });
+  }
+  mutations.push({ type: "del", keys: ["index:order_snapshot_pending"] });
+  for (const [key, snapshot] of pendingEntries) {
+    mutations.push({
+      type: "set",
+      key: `order_snapshot_pending:${key}`,
+      value: JSON.stringify(snapshot),
+    });
+  }
+  if (pendingEntries.length > 0) {
+    mutations.push({
+      type: "sadd",
+      key: "index:order_snapshot_pending",
+      members: pendingEntries.map(([key]) => key),
+    });
+  }
+  mutations.push({
+    type: "set",
+    key: REFETCH_STATE_KEY,
+    value: JSON.stringify(nextState),
+  });
+  await renewWorkflowLeaseIfDue(lease);
+  await fencedMutate(lease, mutations);
+
+  return Response.json({
+    success: true,
+    refetch_done_flag: true,
+    diff_confirmed_flag: false,
+    diff_result: {
+      refetch_cycle_id: refetchCycleId,
+      has_diff: firstAbsenceCount > 0,
+      has_new_uninitialized: false,
+      new_uninitialized_count: 0,
+      first_absence_count: firstAbsenceCount,
+      cycle_not_in_open_orders_count: indexKeys.length,
+      has_fetch_failures: false,
+      failed_unique_keys: [],
+      diff_summary: [],
+      resolved_uninitialized_count: candidate.uninitializedCount,
+      resolved_uninitialized_reason: "not_in_current_open_orders",
+    },
+  });
 }
 
 function baseOrdersFetchFailureResponse(): Response {
@@ -141,6 +300,22 @@ export async function POST(req: Request) {
       previousState?.has_new_uninitialized === true &&
       previousState.post_init_refetch_ready === true &&
       previousState.refetch_cycle_id === sourceRefetchCycleId;
+    const emptyInitCandidate = isAuthorizedPostInitRefetch && previousState
+      ? readEmptyInitCandidate(previousState, sourceRefetchCycleId)
+      : null;
+    if (
+      isAuthorizedPostInitRefetch &&
+      hasAnyEmptyInitMarker(previousState) &&
+      emptyInitCandidate === null
+    ) {
+      return Response.json(
+        {
+          success: false,
+          error: "空一覧確認状態を復元できません。状態を変更せず停止しました。",
+        },
+        { status: 409 }
+      );
+    }
     const mustRejectUnconfirmedRefetch =
       previousState?.refetch_done_flag === true &&
       previousState.diff_confirmed_flag !== true &&
@@ -152,9 +327,41 @@ export async function POST(req: Request) {
       );
     }
 
+    let baseOrdersResult: unknown = null;
+    if (emptyInitCandidate) {
+      try {
+        baseOrdersResult = await withBaseRequestTimeout(
+          (signal) => fetchOrderedOrders({ signal }),
+          req.signal
+        );
+        if (!isBaseOrderSummaryList(baseOrdersResult)) {
+          return baseOrdersFetchFailureResponse();
+        }
+      } catch {
+        return baseOrdersFetchFailureResponse();
+      }
+      if (filterBaseOpenOrders(baseOrdersResult).length === 0) {
+        return await completeEmptyCurrentOrdersRefetch(
+          emptyInitCandidate,
+          lease
+        );
+      }
+    }
+
+    const emptyObservationFields = emptyInitCandidate
+      ? {
+          empty_init_source_cycle_id: emptyInitCandidate.sourceCycleId,
+          empty_init_uninitialized_count: emptyInitCandidate.uninitializedCount,
+          empty_init_checked_at: emptyInitCandidate.initCheckedAt,
+        }
+      : {};
+
     // 手順1: refetch_stateを初期化
     const refetchCycleId = randomUUID();
-    await setRefetchStateFenced(lease, createInitialRefetchState(refetchCycleId));
+    await setRefetchStateFenced(lease, {
+      ...createInitialRefetchState(refetchCycleId),
+      ...emptyObservationFields,
+    });
 
     // 手順2: 既存のpendingを全削除
     const oldPendingKeys = await redis.smembers("index:order_snapshot_pending");
@@ -169,20 +376,21 @@ export async function POST(req: Request) {
     ]);
 
     // 手順3: BASE一覧取得 + 3条件フィルタ
-    let baseOrders;
-    try {
-      baseOrders = await withBaseRequestTimeout((signal) =>
-        fetchOrderedOrders({ signal })
-      );
-    } catch {
+    if (baseOrdersResult === null) {
+      try {
+        baseOrdersResult = await withBaseRequestTimeout(
+          (signal) => fetchOrderedOrders({ signal }),
+          req.signal
+        );
+      } catch {
+        return baseOrdersFetchFailureResponse();
+      }
+    }
+    if (!isBaseOrderSummaryList(baseOrdersResult)) {
       return baseOrdersFetchFailureResponse();
     }
-    const baseOpenOrders = baseOrders.filter(
-      (o) =>
-        o.dispatch_status === "ordered" &&
-        o.dispatched === null &&
-        o.terminated === false
-    );
+    const baseOrders = baseOrdersResult;
+    const baseOpenOrders = filterBaseOpenOrders(baseOrders);
     const baseOpenKeys = new Set(baseOpenOrders.map((o) => o.unique_key));
 
     // 手順4: index:orders と照合して分類
@@ -339,6 +547,7 @@ export async function POST(req: Request) {
       first_absence_count: firstAbsenceCount,
       post_init_refetch_ready: false,
       order_results: orderResults,
+      ...emptyObservationFields,
     });
 
     // 手順8: レスポンス返却

@@ -13,6 +13,7 @@ const {
   releaseWorkflowLease,
 } = await import("../lib/workflow-operation-lease.ts");
 const baseFake = await import("./fakes/workflow-base-api.ts");
+const authFake = await import("./fakes/workflow-auth.ts");
 const initRoute = await import("../app/api/orders/init/route.ts");
 const refetchRoute = await import("../app/api/orders/refetch/route.ts");
 const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
@@ -48,6 +49,40 @@ async function post(route, path, body) {
 async function readRefetchState() {
   const raw = await redis.get("orders:refetch_state");
   return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+async function seedAwaitingInitializationState(cycleId, count = 11) {
+  await clearMemoryRedis();
+  await redis.set(
+    "orders:refetch_state",
+    JSON.stringify({
+      refetch_done_flag: true,
+      diff_confirmed_flag: false,
+      refetched_at: "2026-09-17T00:00:00.000Z",
+      has_new_uninitialized: true,
+      refetch_cycle_id: cycleId,
+      refetch_result: "complete",
+      phase: "awaiting_initialization",
+      new_uninitialized_count: count,
+      first_absence_count: 0,
+      post_init_refetch_ready: false,
+      order_results: {},
+    })
+  );
+  baseFake.setWorkflowBaseOrders([]);
+  authFake.setWorkflowAuthResponse(null);
+}
+
+async function prepareEmptyInitCandidate(cycleId, count = 11) {
+  await seedAwaitingInitializationState(cycleId, count);
+  const response = await withinGuard(
+    post(initRoute, "/api/orders/init", { refetch_cycle_id: cycleId }),
+    `${cycleId}-empty-init`,
+    2_000
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "empty_current_orders");
+  return readRefetchState();
 }
 
 async function prepareAbsencesAndNewOrders({
@@ -544,6 +579,348 @@ try {
 }
 
 // Prior Production verification shape: eight absences and five new orders.
+// RED: an old awaiting-initialization cycle must not be implicitly erased when
+// both the init list read and its authorized refetch observe zero open orders.
+// The old cycle/count remain aggregate audit data; no old order is treated as
+// initialized or confirmed because individual keys may not be recoverable.
+const emptySourceCycleId = "TEST-EMPTY-SOURCE-CYCLE";
+const unresolvedOrderKey = "TEST-EMPTY-UNRESOLVED-ORDER";
+await seedAwaitingInitializationState(emptySourceCycleId);
+const emptyHistoricalOrder = makeOrder("TEST-EMPTY-HISTORICAL", 49_000);
+await initializeOrderData([emptyHistoricalOrder]);
+
+const emptyReloadResponse = await withinGuard(
+  diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm")),
+  "empty-reload-review",
+  2_000
+);
+assert.equal(emptyReloadResponse.status, 200);
+const emptyReloadBody = await emptyReloadResponse.json();
+assert.equal(emptyReloadBody.review.review_status, "fresh");
+assert.equal(emptyReloadBody.review.phase, "awaiting_initialization");
+assert.equal(emptyReloadBody.review.new_uninitialized_count, 11);
+assert.equal(emptyReloadBody.review.can_confirm, false);
+
+const emptyInitResponse = await withinGuard(
+  post(initRoute, "/api/orders/init", {
+    refetch_cycle_id: emptySourceCycleId,
+  }),
+  "empty-init",
+  2_000
+);
+assert.equal(emptyInitResponse.status, 200);
+const emptyInitBody = await emptyInitResponse.json();
+assert.equal(emptyInitBody.success, true);
+assert.equal(emptyInitBody.status, "empty_current_orders");
+assert.equal(baseFake.getWorkflowDetailCallCount(), 0);
+const emptyCandidateState = await readRefetchState();
+assert.equal(emptyCandidateState.refetch_cycle_id, emptySourceCycleId);
+assert.equal(emptyCandidateState.phase, "awaiting_initialization");
+assert.equal(emptyCandidateState.empty_init_source_cycle_id, emptySourceCycleId);
+assert.equal(emptyCandidateState.empty_init_uninitialized_count, 11);
+assert.equal(typeof emptyCandidateState.empty_init_checked_at, "string");
+assert.equal(emptyCandidateState.resolved_uninitialized_reason, undefined);
+
+const emptyAutomaticResponse = await withinGuard(
+  post(refetchRoute, "/api/orders/refetch", {
+    source_refetch_cycle_id: emptySourceCycleId,
+  }),
+  "empty-automatic-refetch",
+  2_000
+);
+assert.equal(emptyAutomaticResponse.status, 200);
+const emptyAutomaticBody = await emptyAutomaticResponse.json();
+assert.equal(emptyAutomaticBody.success, true);
+assert.equal(emptyAutomaticBody.diff_result.has_new_uninitialized, false);
+assert.equal(emptyAutomaticBody.diff_result.new_uninitialized_count, 0);
+assert.equal(emptyAutomaticBody.diff_result.resolved_uninitialized_count, 11);
+assert.equal(
+  emptyAutomaticBody.diff_result.resolved_uninitialized_reason,
+  "not_in_current_open_orders"
+);
+
+const emptyCompletedState = await readRefetchState();
+assert.notEqual(emptyCompletedState.refetch_cycle_id, emptySourceCycleId);
+assert.equal(emptyCompletedState.phase, "awaiting_review");
+assert.equal(emptyCompletedState.has_new_uninitialized, false);
+assert.equal(emptyCompletedState.new_uninitialized_count, 0);
+assert.equal(emptyCompletedState.diff_confirmed_flag, false);
+assert.equal(
+  emptyCompletedState.resolved_uninitialized_cycle_id,
+  emptySourceCycleId
+);
+assert.equal(emptyCompletedState.resolved_uninitialized_count, 11);
+assert.equal(
+  emptyCompletedState.resolved_uninitialized_reason,
+  "not_in_current_open_orders"
+);
+assert.equal(
+  typeof emptyCompletedState.resolved_uninitialized_checked_at,
+  "string"
+);
+assert.equal(await redis.get(`U1:${unresolvedOrderKey}`), null);
+assert.equal(await redis.get(`order_snapshot:${unresolvedOrderKey}`), null);
+assert.equal(
+  (await redis.smembers("index:orders")).includes(unresolvedOrderKey),
+  false
+);
+assert.equal(
+  (await redis.smembers("index:orders")).includes(emptyHistoricalOrder.unique_key),
+  true
+);
+
+const emptyCompletedReviewResponse = await withinGuard(
+  diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm")),
+  "empty-completed-review",
+  2_000
+);
+const emptyCompletedReview = (await emptyCompletedReviewResponse.json()).review;
+assert.equal(emptyCompletedReview.phase, "awaiting_review");
+assert.equal(emptyCompletedReview.can_confirm, true);
+assert.equal(emptyCompletedReview.diff_confirmed_flag, false);
+assert.equal(emptyCompletedReview.resolved_uninitialized_count, 11);
+const emptyListResponse = await withinGuard(
+  orderListRoute.GET(new Request("http://local.test/api/orders/list")),
+  "empty-order-list",
+  2_000
+);
+const emptyListBody = await emptyListResponse.json();
+assert.equal(emptyListBody.success, true);
+assert.equal(emptyListBody.orders.length, 0);
+
+// A later ordinary refetch must not inherit the one-time empty reconciliation
+// audit into another cycle.
+const emptyConfirmResponse = await withinGuard(
+  post(diffConfirmRoute, "/api/orders/diff-confirm", {
+    refetch_cycle_id: emptyCompletedState.refetch_cycle_id,
+  }),
+  "empty-cycle-confirm",
+  2_000
+);
+assert.equal((await emptyConfirmResponse.json()).success, true);
+baseFake.setWorkflowBaseOrders([]);
+const ordinaryAfterEmptyResponse = await withinGuard(
+  post(refetchRoute, "/api/orders/refetch"),
+  "ordinary-after-empty-refetch",
+  2_000
+);
+assert.equal((await ordinaryAfterEmptyResponse.json()).success, true);
+const ordinaryAfterEmptyState = await readRefetchState();
+assert.equal(ordinaryAfterEmptyState.resolved_uninitialized_cycle_id, undefined);
+assert.equal(ordinaryAfterEmptyState.resolved_uninitialized_count, undefined);
+assert.equal(ordinaryAfterEmptyState.resolved_uninitialized_reason, undefined);
+assert.equal(ordinaryAfterEmptyState.resolved_uninitialized_checked_at, undefined);
+
+// If an order appears between the init zero-list read and the authorized
+// refetch, the new cycle must stop at awaiting_initialization. The prior cycle
+// aggregate observation remains available, but no empty-list resolution is
+// finalized and the UI flow must not report success.
+const raceSourceCycleId = "TEST-EMPTY-RACE-SOURCE-CYCLE";
+await seedAwaitingInitializationState(raceSourceCycleId);
+const raceInitResponse = await withinGuard(
+  post(initRoute, "/api/orders/init", {
+    refetch_cycle_id: raceSourceCycleId,
+  }),
+  "empty-race-init",
+  2_000
+);
+assert.equal((await raceInitResponse.json()).status, "empty_current_orders");
+const appearedOrder = makeOrder("TEST-EMPTY-RACE-NEW", 49_001);
+baseFake.setWorkflowBaseOrders([appearedOrder]);
+const raceAutomaticResponse = await withinGuard(
+  post(refetchRoute, "/api/orders/refetch", {
+    source_refetch_cycle_id: raceSourceCycleId,
+  }),
+  "empty-race-refetch",
+  2_000
+);
+const raceAutomaticBody = await raceAutomaticResponse.json();
+assert.equal(raceAutomaticBody.success, true);
+assert.equal(raceAutomaticBody.diff_result.has_new_uninitialized, true);
+assert.equal(raceAutomaticBody.diff_result.new_uninitialized_count, 1);
+const raceState = await readRefetchState();
+assert.equal(raceState.phase, "awaiting_initialization");
+assert.equal(raceState.has_new_uninitialized, true);
+assert.equal(raceState.diff_confirmed_flag, false);
+assert.equal(raceState.empty_init_source_cycle_id, raceSourceCycleId);
+assert.equal(raceState.empty_init_uninitialized_count, 11);
+assert.equal(raceState.resolved_uninitialized_reason, undefined);
+const raceReviewResponse = await withinGuard(
+  diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm")),
+  "empty-race-review",
+  2_000
+);
+const raceReview = (await raceReviewResponse.json()).review;
+assert.equal(raceReview.can_confirm, false);
+assert.equal(raceReview.new_uninitialized_count, 1);
+
+// An init-side failure must not create the empty-list candidate marker.
+for (const [scenario, configure] of [
+  ["HTTP", () => baseFake.setWorkflowOrderListFailure(new Error("HTTP 503"))],
+  ["NON-JSON", () => baseFake.setWorkflowOrderListFailure(new SyntaxError("invalid JSON"))],
+  ["SCHEMA", () => baseFake.setWorkflowOrderListRawResult({ orders: [] })],
+]) {
+  const cycleId = `TEST-EMPTY-INIT-${scenario}`;
+  await seedAwaitingInitializationState(cycleId);
+  const before = await readRefetchState();
+  configure();
+  const response = await withinGuard(
+    post(initRoute, "/api/orders/init", { refetch_cycle_id: cycleId }),
+    `empty-init-${scenario}`,
+    2_000
+  );
+  assert.equal(response.status, 500);
+  assert.deepEqual(await readRefetchState(), before);
+}
+
+await seedAwaitingInitializationState("TEST-EMPTY-INIT-AUTH");
+const authBefore = await readRefetchState();
+authFake.setWorkflowAuthResponse(
+  Response.json({ success: false, error: "authentication required" }, { status: 401 })
+);
+const authFailure = await withinGuard(
+  post(initRoute, "/api/orders/init", {
+    refetch_cycle_id: "TEST-EMPTY-INIT-AUTH",
+  }),
+  "empty-init-auth",
+  2_000
+);
+assert.equal(authFailure.status, 401);
+assert.deepEqual(await readRefetchState(), authBefore);
+authFake.setWorkflowAuthResponse(null);
+
+await seedAwaitingInitializationState("TEST-EMPTY-INIT-ABORT");
+baseFake.setWorkflowOrderListStall(true);
+const abortBefore = await readRefetchState();
+const abortController = new AbortController();
+const abortRequest = new Request("http://local.test/api/orders/init", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ refetch_cycle_id: "TEST-EMPTY-INIT-ABORT" }),
+  signal: abortController.signal,
+});
+const abortedInit = initRoute.POST(abortRequest);
+abortController.abort();
+const abortResponse = await withinGuard(abortedInit, "empty-init-abort", 2_000);
+assert.equal(abortResponse.status, 500);
+assert.deepEqual(await readRefetchState(), abortBefore);
+
+await seedAwaitingInitializationState("TEST-EMPTY-INIT-LEASE");
+const initLeaseBefore = await readRefetchState();
+const initLeaseGate = baseFake.installWorkflowOrderListGate();
+const leaseLostInit = post(initRoute, "/api/orders/init", {
+  refetch_cycle_id: "TEST-EMPTY-INIT-LEASE",
+});
+await withinGuard(initLeaseGate.entered, "empty-init-lease-entered", 2_000);
+const initSuccessorLeaseValue = "TEST-EMPTY-INIT-SUCCESSOR";
+await redis.set(WORKFLOW_LEASE_KEY, initSuccessorLeaseValue, { ex: 90 });
+initLeaseGate.release();
+const initLeaseLostResponse = await withinGuard(
+  leaseLostInit,
+  "empty-init-lease-lost",
+  2_000
+);
+assert.equal(initLeaseLostResponse.status, 409);
+assert.deepEqual(await readRefetchState(), initLeaseBefore);
+assert.equal(await redis.get(WORKFLOW_LEASE_KEY), initSuccessorLeaseValue);
+await redis.del(WORKFLOW_LEASE_KEY);
+
+// Every failure before the second successful zero-list observation preserves
+// the source cycle and provisional aggregate observation without final audit.
+for (const [scenario, configure] of [
+  ["HTTP", () => baseFake.setWorkflowOrderListFailure(new Error("HTTP 503"))],
+  ["NON-JSON", () => baseFake.setWorkflowOrderListFailure(new SyntaxError("invalid JSON"))],
+  ["SCHEMA", () => baseFake.setWorkflowOrderListRawResult({ orders: [] })],
+]) {
+  const cycleId = `TEST-EMPTY-REFETCH-${scenario}`;
+  const before = await prepareEmptyInitCandidate(cycleId);
+  configure();
+  const response = await withinGuard(
+    post(refetchRoute, "/api/orders/refetch", {
+      source_refetch_cycle_id: cycleId,
+    }),
+    `empty-refetch-${scenario}`,
+    2_000
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await readRefetchState(), before);
+  assert.equal((await readRefetchState()).resolved_uninitialized_reason, undefined);
+}
+
+const refetchAuthCycle = "TEST-EMPTY-REFETCH-AUTH";
+const refetchAuthBefore = await prepareEmptyInitCandidate(refetchAuthCycle);
+authFake.setWorkflowAuthResponse(
+  Response.json({ success: false, error: "authentication required" }, { status: 401 })
+);
+const refetchAuthFailure = await withinGuard(
+  post(refetchRoute, "/api/orders/refetch", {
+    source_refetch_cycle_id: refetchAuthCycle,
+  }),
+  "empty-refetch-auth",
+  2_000
+);
+assert.equal(refetchAuthFailure.status, 401);
+assert.deepEqual(await readRefetchState(), refetchAuthBefore);
+authFake.setWorkflowAuthResponse(null);
+
+const refetchAbortCycle = "TEST-EMPTY-REFETCH-ABORT";
+const refetchAbortBefore = await prepareEmptyInitCandidate(refetchAbortCycle);
+baseFake.setWorkflowOrderListStall(true);
+const refetchAbortController = new AbortController();
+const refetchAbortRequest = new Request("http://local.test/api/orders/refetch", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ source_refetch_cycle_id: refetchAbortCycle }),
+  signal: refetchAbortController.signal,
+});
+const abortedRefetch = refetchRoute.POST(refetchAbortRequest);
+refetchAbortController.abort();
+const refetchAbortResponse = await withinGuard(
+  abortedRefetch,
+  "empty-refetch-abort",
+  2_000
+);
+assert.equal(refetchAbortResponse.status, 503);
+assert.deepEqual(await readRefetchState(), refetchAbortBefore);
+
+const refetchTimeoutCycle = "TEST-EMPTY-REFETCH-TIMEOUT";
+const refetchTimeoutBefore = await prepareEmptyInitCandidate(refetchTimeoutCycle);
+baseFake.setWorkflowOrderListStall(true);
+AbortSignal.timeout = () => nativeAbortTimeout(25);
+try {
+  const refetchTimeoutResponse = await withinGuard(
+    post(refetchRoute, "/api/orders/refetch", {
+      source_refetch_cycle_id: refetchTimeoutCycle,
+    }),
+    "empty-refetch-timeout",
+    2_000
+  );
+  assert.equal(refetchTimeoutResponse.status, 503);
+  assert.deepEqual(await readRefetchState(), refetchTimeoutBefore);
+} finally {
+  AbortSignal.timeout = nativeAbortTimeout;
+}
+
+const refetchLeaseCycle = "TEST-EMPTY-REFETCH-LEASE";
+const refetchLeaseBefore = await prepareEmptyInitCandidate(refetchLeaseCycle);
+const leaseGate = baseFake.installWorkflowOrderListGate();
+const leaseLostRefetch = post(refetchRoute, "/api/orders/refetch", {
+  source_refetch_cycle_id: refetchLeaseCycle,
+});
+await withinGuard(leaseGate.entered, "empty-refetch-lease-entered", 2_000);
+const successorLeaseValue = "TEST-EMPTY-REFETCH-SUCCESSOR";
+await redis.set(WORKFLOW_LEASE_KEY, successorLeaseValue, { ex: 90 });
+leaseGate.release();
+const leaseLostResponse = await withinGuard(
+  leaseLostRefetch,
+  "empty-refetch-lease-lost",
+  2_000
+);
+assert.equal(leaseLostResponse.status, 409);
+assert.deepEqual(await readRefetchState(), refetchLeaseBefore);
+assert.equal(await redis.get(WORKFLOW_LEASE_KEY), successorLeaseValue);
+await redis.del(WORKFLOW_LEASE_KEY);
+
 prepared = await prepareAbsencesAndNewOrders({
   historicalCount: 8,
   newCount: 5,
