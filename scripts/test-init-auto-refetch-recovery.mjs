@@ -585,6 +585,7 @@ try {
 // initialized or confirmed because individual keys may not be recoverable.
 const emptySourceCycleId = "TEST-EMPTY-SOURCE-CYCLE";
 const unresolvedOrderKey = "TEST-EMPTY-UNRESOLVED-ORDER";
+const unresolvedOrderItemId = 49_099;
 await seedAwaitingInitializationState(emptySourceCycleId);
 const emptyHistoricalOrder = makeOrder("TEST-EMPTY-HISTORICAL", 49_000);
 await initializeOrderData([emptyHistoricalOrder]);
@@ -658,8 +659,10 @@ assert.equal(
   typeof emptyCompletedState.resolved_uninitialized_checked_at,
   "string"
 );
-assert.equal(await redis.get(`U1:${unresolvedOrderKey}`), null);
+assert.equal(await redis.get(`order:${unresolvedOrderKey}`), null);
 assert.equal(await redis.get(`order_snapshot:${unresolvedOrderKey}`), null);
+assert.equal(await redis.get(`index:picking:${unresolvedOrderKey}`), null);
+assert.equal(await redis.get(`picking:${unresolvedOrderItemId}`), null);
 assert.equal(
   (await redis.smembers("index:orders")).includes(unresolvedOrderKey),
   false
