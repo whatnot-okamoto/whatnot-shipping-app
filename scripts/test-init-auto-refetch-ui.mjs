@@ -33,6 +33,7 @@ assert.equal(
   false,
   "a successful refetch that still reports an uninitialized order must be visible as incomplete"
 );
+assert.equal(result.requiresReload, true);
 assert.match(result.error, /未初期化|初期化.*完了/);
 assert.ok(calls[0].init.signal instanceof AbortSignal);
 assert.equal(calls[0].init.signal, calls[1].init.signal);
@@ -61,7 +62,42 @@ const explicitInitFailure = await runInitAndRefetch("cycle-init-failure", async 
 assert.deepEqual(explicitInitFailure, {
   success: false,
   error: "fixture init failure",
+  requiresReload: true,
 });
+
+let reloadAttempt = 0;
+const partialThenReloadedResume = async (input) => {
+  if (String(input) === "/api/orders/init") {
+    reloadAttempt += 1;
+    if (reloadAttempt === 1) {
+      return Response.json({
+        success: false,
+        status: "partial_failed",
+        message: "再読み込みして状態を確認してください。",
+      });
+    }
+    return Response.json({ success: true, status: "completed" });
+  }
+  return Response.json({
+    success: true,
+    diff_result: {
+      ...repeatedUninitializedResult,
+      has_new_uninitialized: false,
+      new_uninitialized_count: 0,
+    },
+  });
+};
+const partialBeforeReload = await runInitAndRefetch(
+  "cycle-partial-resume",
+  partialThenReloadedResume
+);
+assert.equal(partialBeforeReload.success, false);
+assert.equal(partialBeforeReload.requiresReload, true);
+const resumedAfterReload = await runInitAndRefetch(
+  "cycle-partial-resume",
+  partialThenReloadedResume
+);
+assert.equal(resumedAfterReload.success, true);
 
 const explicitRefetchFailure = await runInitAndRefetch(
   "cycle-refetch-failure",
@@ -78,6 +114,7 @@ const explicitRefetchFailure = await runInitAndRefetch(
 assert.deepEqual(explicitRefetchFailure, {
   success: false,
   error: "fixture refetch failure",
+  requiresReload: true,
 });
 
 const contradictoryHttpFailure = await runInitAndRefetch(
@@ -101,6 +138,38 @@ const contradictoryHttpFailure = await runInitAndRefetch(
 );
 assert.equal(contradictoryHttpFailure.success, false);
 
+const malformedInitSuccess = await runInitAndRefetch(
+  "cycle-malformed-init",
+  async (input) => {
+    if (String(input) === "/api/orders/init") {
+      return Response.json({ success: true });
+    }
+    return Response.json({ success: true, diff_result: repeatedUninitializedResult });
+  }
+);
+assert.equal(malformedInitSuccess.success, false);
+assert.equal(malformedInitSuccess.requiresReload, true);
+
+const malformedRefetchSuccess = await runInitAndRefetch(
+  "cycle-malformed-refetch",
+  async (input) => {
+    if (String(input) === "/api/orders/init") {
+      return Response.json({ success: true, status: "completed" });
+    }
+    return Response.json({
+      success: true,
+      diff_result: {
+        refetch_cycle_id: "cycle-next",
+        has_diff: false,
+        has_new_uninitialized: false,
+        new_uninitialized_count: -1,
+      },
+    });
+  }
+);
+assert.equal(malformedRefetchSuccess.success, false);
+assert.equal(malformedRefetchSuccess.requiresReload, true);
+
 const nonJsonRefetch = await runInitAndRefetch("cycle-non-json", async (input) => {
   if (String(input) === "/api/orders/init") {
     return Response.json({ success: true, status: "completed" });
@@ -108,7 +177,8 @@ const nonJsonRefetch = await runInitAndRefetch("cycle-non-json", async (input) =
   return new Response("not-json", { status: 502 });
 });
 assert.equal(nonJsonRefetch.success, false);
-assert.equal(nonJsonRefetch.error, "ネットワークエラーが発生しました");
+assert.match(nonJsonRefetch.error, /応答内容|再読み込み/);
+assert.equal(nonJsonRefetch.requiresReload, true);
 
 async function withinGuard(promise, scenario, timeoutMs = 250) {
   let guardTimer;

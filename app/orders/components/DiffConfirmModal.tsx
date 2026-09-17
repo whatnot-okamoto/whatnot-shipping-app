@@ -52,6 +52,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
   const [diffResult, setDiffResult] = useState<DiffResult>(initialDiffResult);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initRetryRequiresReload, setInitRetryRequiresReload] = useState(false);
 
   const {
     has_diff,
@@ -100,6 +101,7 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
       );
       if (!result.success) {
         setError(result.error);
+        setInitRetryRequiresReload(result.requiresReload);
         return;
       }
       setDiffResult(result.diffResult);
@@ -149,12 +151,16 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
             {error && <p className="text-xs text-red-600">{error}</p>}
             <button
               type="button"
-              disabled={isProcessing}
+              disabled={isProcessing || initRetryRequiresReload}
               onClick={handleInitAndRefetch}
               className="w-full py-2 rounded bg-blue-600 text-white text-sm font-medium
                          disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isProcessing ? "処理中..." : "初期化を実行する"}
+              {isProcessing
+                ? "処理中..."
+                : initRetryRequiresReload
+                  ? "再読み込み後に状態を確認してください"
+                  : "初期化を実行する"}
             </button>
           </>
         )}

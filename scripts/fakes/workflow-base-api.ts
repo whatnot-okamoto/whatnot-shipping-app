@@ -13,6 +13,7 @@ let fetchFailureMessage = "fixture fetch failure";
 let orderListStalls = false;
 let orderListCalls = 0;
 let detailCalls = 0;
+let detailDelayMs = 0;
 let orderListGate:
   | { entered: () => void; wait: Promise<void> }
   | null = null;
@@ -33,6 +34,24 @@ function waitForAbort<T>(signal?: AbortSignal): Promise<T> {
   });
 }
 
+function waitForDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("fixture request aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("fixture request aborted", "AbortError"));
+      },
+      { once: true }
+    );
+  });
+}
+
 export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   orders = structuredClone(nextOrders);
   failedKeys.clear();
@@ -41,6 +60,7 @@ export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   orderListStalls = false;
   orderListCalls = 0;
   detailCalls = 0;
+  detailDelayMs = 0;
   orderListGate = null;
   detailGate = null;
 }
@@ -99,6 +119,10 @@ export function setWorkflowDetailStalls(uniqueKeys: string[]): void {
   for (const key of uniqueKeys) stalledKeys.add(key);
 }
 
+export function setWorkflowDetailDelay(delayMs: number): void {
+  detailDelayMs = delayMs;
+}
+
 export function setWorkflowFetchFailureMessage(message: string): void {
   fetchFailureMessage = message;
 }
@@ -138,6 +162,7 @@ export async function fetchOrderDetail(
   options?: { signal?: AbortSignal }
 ): Promise<BaseOrder> {
   detailCalls += 1;
+  if (detailDelayMs > 0) await waitForDelay(detailDelayMs, options?.signal);
   if (detailGate?.uniqueKey === uniqueKey) {
     const gate = detailGate;
     detailGate = null;

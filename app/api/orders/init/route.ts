@@ -18,7 +18,31 @@ import {
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
 
-const INIT_BASE_REQUEST_TIMEOUT_MS = 15_000;
+export const maxDuration = 300;
+export const INIT_BASE_LIST_TIMEOUT_MS = 30_000;
+export const INIT_BASE_DETAIL_TIMEOUT_MS = 45_000;
+export const INIT_BASE_PHASE_TIMEOUT_MS = 180_000;
+
+async function withBaseOperationTimeout<T>(
+  phaseSignal: AbortSignal,
+  operationTimeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const operationSignal = AbortSignal.timeout(operationTimeoutMs);
+  const signal = AbortSignal.any([phaseSignal, operationSignal]);
+  return Promise.race([
+    operation(signal),
+    new Promise<T>((_, reject) => {
+      const rejectForTimeout = () =>
+        reject(new DOMException("BASE request timed out", "TimeoutError"));
+      if (signal.aborted) {
+        rejectForTimeout();
+        return;
+      }
+      signal.addEventListener("abort", rejectForTimeout, { once: true });
+    }),
+  ]);
+}
 
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
@@ -70,7 +94,8 @@ export async function POST(req: Request) {
       (refetchState.phase === "awaiting_initialization" ||
         refetchState.phase === undefined) &&
       requestedCycleId !== null &&
-      requestedCycleId === refetchState.refetch_cycle_id;
+      requestedCycleId === refetchState.refetch_cycle_id &&
+      currentSessionId === null;
     if (!isInitialBootstrap && !isSameCycleRecoveryInit) {
       return Response.json(
         {
@@ -82,22 +107,45 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
-    // BASE読取り全体を有限時間に閉じる。単一リクエストの停止で
-    // workflow leaseと画面を実行時間上限まで保持しない。
-    const signal = AbortSignal.timeout(INIT_BASE_REQUEST_TIMEOUT_MS);
+    // BASE読取りphaseはroute上限300秒より120秒早く閉じる。
+    // 一覧・詳細1件にも個別上限を設け、複数の正常応答が単一の短い
+    // signalを共有して誤って打ち切られないようにする。残り時間は、
+    // 取得済み注文のRedis保存、lease付き状態更新、応答に確保する。
+    const basePhaseSignal = AbortSignal.timeout(INIT_BASE_PHASE_TIMEOUT_MS);
 
     // 手順1: 注文一覧取得（サマリのみ）
-    const summaries = await fetchOrderedOrders({ signal });
+    const summaries = await withBaseOperationTimeout(
+      basePhaseSignal,
+      INIT_BASE_LIST_TIMEOUT_MS,
+      (signal) => fetchOrderedOrders({ signal })
+    );
+    const indexedOrderSet = new Set(indexedOrders);
+    const uninitializedSummaries = summaries.filter(
+      (summary) => !indexedOrderSet.has(summary.unique_key)
+    );
 
-    // 手順2: 各 unique_key の詳細をシリアルフェッチ
+    // 手順2: 未初期化unique_keyだけをシリアルフェッチ。
+    // 部分成功後の同一cycle再開では、前回保存済み注文を再初期化しない。
     const details: BaseOrder[] = [];
     const failedUniqueKeys: string[] = [];
     const warnings: string[] = [];
 
-    for (const summary of summaries) {
+    for (let index = 0; index < uninitializedSummaries.length; index += 1) {
+      const summary = uninitializedSummaries[index];
+      if (basePhaseSignal.aborted) {
+        failedUniqueKeys.push(
+          ...uninitializedSummaries.slice(index).map((item) => item.unique_key)
+        );
+        warnings.push("初期化全体のBASE取得時間上限に達しました。");
+        break;
+      }
       await renewWorkflowLeaseIfDue(lease);
       try {
-        const detail = await fetchOrderDetail(summary.unique_key, { signal });
+        const detail = await withBaseOperationTimeout(
+          basePhaseSignal,
+          INIT_BASE_DETAIL_TIMEOUT_MS,
+          (signal) => fetchOrderDetail(summary.unique_key, { signal })
+        );
 
         // shipping_lines チェック（0件 or 複数件はスタッフ確認が必要）
         if (detail.shipping_lines.length === 0) {
@@ -115,6 +163,15 @@ export async function POST(req: Request) {
         const msg = err instanceof Error ? err.message : String(err);
         failedUniqueKeys.push(summary.unique_key);
         warnings.push(`${summary.unique_key}: 詳細取得失敗 - ${msg}`);
+        if (basePhaseSignal.aborted) {
+          failedUniqueKeys.push(
+            ...uninitializedSummaries
+              .slice(index + 1)
+              .map((item) => item.unique_key)
+          );
+          warnings.push("初期化全体のBASE取得時間上限に達しました。");
+          break;
+        }
       }
     }
 
@@ -133,7 +190,7 @@ export async function POST(req: Request) {
       warnings.push("index:orders への sadd が失敗しました。/api/orders/list に注文が表示されない可能性があります。");
     }
 
-    const skipped = summaries.length - details.length;
+    const skipped = uninitializedSummaries.length - details.length;
     const hasIndexFailure = result.indexOrdersFailed;
 
     if (failedUniqueKeys.length === 0 && !hasIndexFailure) {
@@ -166,6 +223,19 @@ export async function POST(req: Request) {
       warnings,
       result,
     });
+    if (refetchState?.has_new_uninitialized === true) {
+      const remainingUninitializedCount = hasIndexFailure
+        ? uninitializedSummaries.length
+        : failedUniqueKeys.length;
+      await setRefetchStateFenced(lease, {
+        ...refetchState,
+        phase: "awaiting_initialization",
+        diff_confirmed_flag: false,
+        has_new_uninitialized: true,
+        new_uninitialized_count: remainingUninitializedCount,
+        post_init_refetch_ready: false,
+      });
+    }
     return Response.json({
       success: false,
       status: "partial_failed",
@@ -173,7 +243,8 @@ export async function POST(req: Request) {
       skipped,
       failed_unique_keys: failedUniqueKeys,
       warnings,
-      message: "初期化に失敗しました。時間をおいて再実行してください。",
+      message:
+        "一部の注文を初期化できませんでした。同じ画面では再押下せず、画面を再読み込みして状態を確認してください。",
       u1Count: result.u1Count,
       u2Count: result.u2Count,
       u4Count: result.u4Count,
@@ -189,7 +260,11 @@ export async function POST(req: Request) {
     }
     console.error("[orders/init] 予期しないエラー:", err);
     return Response.json(
-      { success: false, message: "初期化に失敗しました。時間をおいて再実行してください。" },
+      {
+        success: false,
+        message:
+          "初期化に失敗しました。同じ画面では再押下せず、画面を再読み込みして状態を確認してください。",
+      },
       { status: 500 }
     );
   } finally {

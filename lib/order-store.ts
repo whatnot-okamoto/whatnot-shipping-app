@@ -125,7 +125,7 @@ export type InitializeResult = {
  *
  * 処理順序:
  *   1. 同梱グループを生成（U2 の単位を決定）
- *   2. pipeline に U2・U1・U4・インデックスキーの全書き込みコマンドを積む
+ *   2. pipeline に U1・U4・インデックスキー・U2の全書き込みコマンドを積む
  *   3. pipeline.exec() で一括送信（整合性担保）
  *
  * shipping_lines.length !== 1 の注文は category="unknown" として扱う。
@@ -136,24 +136,44 @@ export async function initializeOrderData(
 ): Promise<InitializeResult> {
   const bundles = groupOrdersIntoU2Bundles(orders);
   const mutations: RedisMutation[] = [];
+  const bundleMutations: RedisMutation[] = [];
   const enqueueSetNx = (key: string, value: unknown) => {
     mutations.push({ type: "set_nx", key, value });
   };
   const unknownMethodOrders: InitializeResult["unknownMethodOrders"] = [];
+  const existingBundles = await getBundleStates([...bundles.keys()]);
 
   for (const [bundleGroupId, bundleOrders] of bundles) {
     // --- U2 ---
     const orderUniqueKeys = bundleOrders
       .map((o) => o.unique_key)
       .sort();
-    const u2: U2Data = {
-      bundle_group_id: bundleGroupId,
-      order_unique_keys: orderUniqueKeys,
-      bundle_enabled: true,
-      representative_order_unique_key: orderUniqueKeys[0],  // 辞書順最小が代表（DATA-01 U2）
-      tracking_number: "",
-    };
-    enqueueSetNx(`bundle:${bundleGroupId}`, JSON.stringify(u2));
+    const existingBundle = existingBundles.get(bundleGroupId);
+    const mergedOrderUniqueKeys = [
+      ...new Set([
+        ...(existingBundle?.order_unique_keys ?? []),
+        ...orderUniqueKeys,
+      ]),
+    ].sort();
+    const u2: U2Data = existingBundle
+      ? {
+          ...existingBundle,
+          bundle_group_id: bundleGroupId,
+          order_unique_keys: mergedOrderUniqueKeys,
+          representative_order_unique_key: mergedOrderUniqueKeys[0],
+        }
+      : {
+          bundle_group_id: bundleGroupId,
+          order_unique_keys: mergedOrderUniqueKeys,
+          bundle_enabled: true,
+          representative_order_unique_key: mergedOrderUniqueKeys[0],
+          tracking_number: "",
+        };
+    bundleMutations.push({
+      type: existingBundle ? "set" : "set_nx",
+      key: `bundle:${bundleGroupId}`,
+      value: JSON.stringify(u2),
+    });
 
     for (const order of bundleOrders) {
       // shipping_lines.length === 1 のときのみ分類。0 または >1 は unknown 扱い。
@@ -218,6 +238,11 @@ export async function initializeOrderData(
     }
   }
 
+  // U1・U4・snapshotの後にU2を作成・修復する。部分処理済みの再開時は
+  // 既存U2のスタッフ操作値を保持し、同じ決定論的groupの構成員だけを
+  // 和集合にする。SET NXだけでは欠落した構成員を復元できないため。
+  mutations.push(...bundleMutations);
+
   // U1・U2・U4・snapshot・インデックスキーを一括送信（整合ルール DATA-01 §5）
   if (lease) {
     for (let offset = 0; offset < mutations.length; offset += DIFF_CONFIRM_CHUNK_SIZE) {
@@ -232,6 +257,8 @@ export async function initializeOrderData(
     for (const mutation of mutations) {
       if (mutation.type === "set_nx") {
         pipe.set(mutation.key, mutation.value, { nx: true });
+      } else if (mutation.type === "set") {
+        pipe.set(mutation.key, mutation.value);
       }
     }
     await pipe.exec();
