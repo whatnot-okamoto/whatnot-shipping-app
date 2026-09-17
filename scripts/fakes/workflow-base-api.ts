@@ -12,8 +12,12 @@ const stalledKeys = new Set<string>();
 let fetchFailureMessage = "fixture fetch failure";
 let orderListStalls = false;
 let orderListCalls = 0;
+let detailCalls = 0;
 let orderListGate:
   | { entered: () => void; wait: Promise<void> }
+  | null = null;
+let detailGate:
+  | { uniqueKey: string; entered: () => void; wait: Promise<void> }
   | null = null;
 
 function waitForAbort<T>(signal?: AbortSignal): Promise<T> {
@@ -36,7 +40,9 @@ export function setWorkflowBaseOrders(nextOrders: BaseOrder[]): void {
   fetchFailureMessage = "fixture fetch failure";
   orderListStalls = false;
   orderListCalls = 0;
+  detailCalls = 0;
   orderListGate = null;
+  detailGate = null;
 }
 
 export function installWorkflowOrderListGate(): {
@@ -57,6 +63,26 @@ export function installWorkflowOrderListGate(): {
 
 export function getWorkflowOrderListCallCount(): number {
   return orderListCalls;
+}
+
+export function getWorkflowDetailCallCount(): number {
+  return detailCalls;
+}
+
+export function installWorkflowDetailGate(uniqueKey: string): {
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  detailGate = { uniqueKey, entered: markEntered, wait };
+  return { entered, release };
 }
 
 export function setWorkflowOrderListStall(shouldStall: boolean): void {
@@ -111,6 +137,13 @@ export async function fetchOrderDetail(
   uniqueKey: string,
   options?: { signal?: AbortSignal }
 ): Promise<BaseOrder> {
+  detailCalls += 1;
+  if (detailGate?.uniqueKey === uniqueKey) {
+    const gate = detailGate;
+    detailGate = null;
+    gate.entered();
+    await gate.wait;
+  }
   if (stalledKeys.has(uniqueKey)) return waitForAbort(options?.signal);
   if (failedKeys.has(uniqueKey)) throw new Error(fetchFailureMessage);
   const order = orders.find((candidate) => candidate.unique_key === uniqueKey);

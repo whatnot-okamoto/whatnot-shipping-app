@@ -6,6 +6,7 @@ import {
   type DiffRecoveryStatus,
 } from "./diff-confirm-view-policy";
 import DiffAbsenceSummary from "./DiffAbsenceSummary";
+import { runInitAndRefetch } from "./init-and-refetch-flow";
 
 export type DiffItem = {
   unique_key: string;
@@ -33,12 +34,6 @@ type Props = {
   initialDiffResult: DiffResult;
   /** 差分確認完了後に呼ぶ（モーダルを閉じ、注文一覧を再取得） */
   onConfirmed: () => void;
-};
-
-type RefetchApiResponse = {
-  success: boolean;
-  diff_result?: DiffResult;
-  error?: string;
 };
 
 const SEVERITY_CLASS: Record<DiffItem["severity"], string> = {
@@ -100,45 +95,14 @@ export default function DiffConfirmModal({ initialDiffResult, onConfirmed }: Pro
     setIsProcessing(true);
     setError(null);
     try {
-      // POST /api/orders/init
-      const initRes = await fetch("/api/orders/init", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refetch_cycle_id: diffResult.refetch_cycle_id }),
-      });
-      let initData: { success: boolean; message?: string; error?: string } | null = null;
-      try {
-        initData = await initRes.json();
-      } catch {
-        setError("初期化に失敗しました。時間をおいて再実行してください。");
+      const result = await runInitAndRefetch<DiffResult>(
+        diffResult.refetch_cycle_id
+      );
+      if (!result.success) {
+        setError(result.error);
         return;
       }
-
-      if (!initRes.ok || !initData?.success) {
-        const message =
-          initData?.message ||
-          initData?.error ||
-          "初期化に失敗しました。時間をおいて再実行してください。";
-        setError(message);
-        return;
-      }
-
-      // 初期化完了後、自動でPOST /api/orders/refetchを再実行
-      const refetchRes = await fetch("/api/orders/refetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_refetch_cycle_id: diffResult.refetch_cycle_id }),
-      });
-      const refetchData = await refetchRes.json() as RefetchApiResponse;
-      if (!refetchData.success || !refetchData.diff_result) {
-        setError(refetchData.error ?? "再取得に失敗しました");
-        return;
-      }
-
-      // モーダルの表示を新しい結果で更新
-      setDiffResult(refetchData.diff_result);
-    } catch {
-      setError("ネットワークエラーが発生しました");
+      setDiffResult(result.diffResult);
     } finally {
       setIsProcessing(false);
     }

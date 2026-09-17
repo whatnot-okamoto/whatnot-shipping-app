@@ -18,6 +18,8 @@ import {
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
 
+const INIT_BASE_REQUEST_TIMEOUT_MS = 15_000;
+
 export async function POST(req: Request) {
   const authError = await requireAuth(req);
   if (authError) return authError;
@@ -80,8 +82,12 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
+    // BASE読取り全体を有限時間に閉じる。単一リクエストの停止で
+    // workflow leaseと画面を実行時間上限まで保持しない。
+    const signal = AbortSignal.timeout(INIT_BASE_REQUEST_TIMEOUT_MS);
+
     // 手順1: 注文一覧取得（サマリのみ）
-    const summaries = await fetchOrderedOrders();
+    const summaries = await fetchOrderedOrders({ signal });
 
     // 手順2: 各 unique_key の詳細をシリアルフェッチ
     const details: BaseOrder[] = [];
@@ -91,7 +97,7 @@ export async function POST(req: Request) {
     for (const summary of summaries) {
       await renewWorkflowLeaseIfDue(lease);
       try {
-        const detail = await fetchOrderDetail(summary.unique_key);
+        const detail = await fetchOrderDetail(summary.unique_key, { signal });
 
         // shipping_lines チェック（0件 or 複数件はスタッフ確認が必要）
         if (detail.shipping_lines.length === 0) {
