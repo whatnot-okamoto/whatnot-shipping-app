@@ -78,6 +78,7 @@ export type DiffRecoveryReview = {
   review_status: "fresh" | "resuming_partial" | "conflict" | "confirmed";
   can_confirm: boolean;
   can_initialize: boolean;
+  has_new_uninitialized: boolean;
   processed_details_fully_recoverable: boolean;
   diff_confirmed_flag: boolean;
   remaining_diff_count: number;
@@ -102,6 +103,7 @@ export function canInitializeDiffReview(
     | "phase"
     | "review_status"
     | "can_confirm"
+    | "has_new_uninitialized"
     | "new_uninitialized_count"
   >,
   requestedCycleId: string = review.refetch_cycle_id
@@ -111,6 +113,7 @@ export function canInitializeDiffReview(
     review.phase === "awaiting_initialization" &&
     review.review_status === "fresh" &&
     review.can_confirm === false &&
+    review.has_new_uninitialized === true &&
     Number.isSafeInteger(review.new_uninitialized_count) &&
     Number(review.new_uninitialized_count) > 0
   );
@@ -349,6 +352,7 @@ export async function getDiffRecoveryReview(): Promise<DiffRecoveryReview | null
     review_status: classification.reviewStatus,
     can_confirm: classification.canConfirm,
     can_initialize: false,
+    has_new_uninitialized: state.has_new_uninitialized === true,
     processed_details_fully_recoverable:
       classification.processedDetailsFullyRecoverable,
     diff_confirmed_flag: state.diff_confirmed_flag,

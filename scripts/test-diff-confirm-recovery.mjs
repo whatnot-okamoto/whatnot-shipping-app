@@ -9,6 +9,9 @@ process.env.APP_STORE_MODE = "memory";
 const { FIXTURE_DATA } = await import("../lib/pdf-fixture-data.ts");
 const { redis } = await import("../lib/upstash.ts");
 const { initializeOrderData } = await import("../lib/order-store.ts");
+const { canInitializeDiffReview } = await import(
+  "../lib/order-diff-confirmation.ts"
+);
 const baseFake = await import("./fakes/workflow-base-api.ts");
 const refetchRoute = await import("../app/api/orders/refetch/route.ts");
 const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
@@ -559,6 +562,18 @@ const safeInitializationBody = await (
 assert.equal(safeInitializationBody.review.review_status, "fresh");
 assert.equal(safeInitializationBody.review.can_confirm, false);
 assert.equal(safeInitializationBody.review.can_initialize, true);
+assert.equal(
+  canInitializeDiffReview({
+    refetch_cycle_id: getCycle,
+    phase: "awaiting_initialization",
+    review_status: "fresh",
+    can_confirm: false,
+    has_new_uninitialized: false,
+    new_uninitialized_count: 8,
+  }),
+  false,
+  "a stale positive count must not authorize initialization when the state flag is false"
+);
 assert.equal(
   getInitializationActionView({
     has_new_uninitialized: true,

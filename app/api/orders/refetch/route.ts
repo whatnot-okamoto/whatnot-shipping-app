@@ -33,6 +33,7 @@ import {
   type WorkflowLease,
   WorkflowLeaseLostError,
 } from "@/lib/workflow-operation-lease";
+import { canInitializeDiffReview } from "@/lib/order-diff-confirmation";
 
 export type DiffItem = {
   unique_key: string;
@@ -196,6 +197,15 @@ async function completeEmptyCurrentOrdersRefetch(
   await renewWorkflowLeaseIfDue(lease);
   await fencedMutate(lease, mutations);
 
+  const canInitialize = canInitializeDiffReview({
+    refetch_cycle_id: refetchCycleId,
+    phase: nextState.phase ?? "legacy",
+    review_status: "fresh",
+    can_confirm: true,
+    has_new_uninitialized: false,
+    new_uninitialized_count: 0,
+  });
+
   return Response.json({
     success: true,
     refetch_done_flag: true,
@@ -214,7 +224,7 @@ async function completeEmptyCurrentOrdersRefetch(
       resolved_uninitialized_reason: "not_in_current_open_orders",
       recovery_status: "fresh",
       can_confirm: true,
-      can_initialize: false,
+      can_initialize: canInitialize,
     },
   });
 }
@@ -513,6 +523,18 @@ export async function POST(req: Request) {
     }
 
     const hasNewUninitialized = newOrders.length > 0;
+    const nextPhase = hasNewUninitialized
+      ? "awaiting_initialization"
+      : "awaiting_review";
+    const canConfirm = !hasNewUninitialized;
+    const canInitialize = canInitializeDiffReview({
+      refetch_cycle_id: refetchCycleId,
+      phase: nextPhase,
+      review_status: "fresh",
+      can_confirm: canConfirm,
+      has_new_uninitialized: hasNewUninitialized,
+      new_uninitialized_count: newOrders.length,
+    });
 
     // 手順7: refetch_stateを更新
     const pendingEntries = [...pendingSnapshots.entries()];
@@ -545,7 +567,7 @@ export async function POST(req: Request) {
       has_new_uninitialized: hasNewUninitialized,
       refetch_cycle_id: refetchCycleId,
       refetch_result: failedUniqueKeys.length > 0 ? "partial" : "complete",
-      phase: hasNewUninitialized ? "awaiting_initialization" : "awaiting_review",
+      phase: nextPhase,
       new_uninitialized_count: newOrders.length,
       first_absence_count: firstAbsenceCount,
       post_init_refetch_ready: false,
@@ -568,8 +590,8 @@ export async function POST(req: Request) {
         has_fetch_failures: failedUniqueKeys.length > 0,
         failed_unique_keys: failedUniqueKeys,
         recovery_status: "fresh",
-        can_confirm: !hasNewUninitialized,
-        can_initialize: hasNewUninitialized,
+        can_confirm: canConfirm,
+        can_initialize: canInitialize,
         diff_summary: diffSummary,
       },
     });

@@ -7,6 +7,9 @@ process.env.APP_STORE_MODE = "memory";
 const { FIXTURE_DATA } = await import("../lib/pdf-fixture-data.ts");
 const { redis } = await import("../lib/upstash.ts");
 const { initializeOrderData } = await import("../lib/order-store.ts");
+const { canInitializeDiffReview } = await import(
+  "../lib/order-diff-confirmation.ts"
+);
 const {
   WORKFLOW_LEASE_KEY,
   acquireWorkflowLease,
@@ -174,6 +177,17 @@ async function prepareAbsencesAndNewOrders({
   assert.equal(currentBody.diff_result.first_absence_count, historicalCount);
   assert.equal(currentBody.diff_result.has_new_uninitialized, true);
   assert.equal(currentBody.diff_result.new_uninitialized_count, newCount);
+  assert.equal(
+    currentBody.diff_result.can_initialize,
+    canInitializeDiffReview({
+      refetch_cycle_id: currentBody.diff_result.refetch_cycle_id,
+      phase: "awaiting_initialization",
+      review_status: "fresh",
+      can_confirm: false,
+      has_new_uninitialized: true,
+      new_uninitialized_count: newCount,
+    })
+  );
 
   const state = await readRefetchState();
   assert.equal(state.phase, "awaiting_initialization");
@@ -243,6 +257,58 @@ assert.equal(baseFake.getWorkflowDetailCallCount(), detailCallsBeforeUnsafeInit)
 assert.equal(writeObservation.calls.length, 0, "conflict preflight must perform zero Redis writes");
 assert.equal(await redis.get(WORKFLOW_LEASE_KEY), null);
 assert.deepEqual(await readRedisContents(), unsafeBefore);
+
+// A stale positive count cannot authorize initialization when the canonical
+// has_new_uninitialized flag is false. GET and POST both fail closed, and the
+// POST is rejected before lease creation or any BASE/Redis write.
+const staleCountCycleId = "TEST-STALE-UNINITIALIZED-COUNT";
+await seedAwaitingInitializationState(staleCountCycleId, 1);
+await redis.set(
+  "orders:refetch_state",
+  JSON.stringify({
+    ...(await readRefetchState()),
+    has_new_uninitialized: false,
+  })
+);
+const staleCountReviewResponse = await withinGuard(
+  diffConfirmRoute.GET(new Request("http://local.test/api/orders/diff-confirm")),
+  "stale-uninitialized-count-review",
+  2_000
+);
+assert.equal(staleCountReviewResponse.status, 200);
+const staleCountReview = (await staleCountReviewResponse.json()).review;
+assert.equal(staleCountReview.review_status, "fresh");
+assert.equal(staleCountReview.has_new_uninitialized, false);
+assert.equal(staleCountReview.new_uninitialized_count, 1);
+assert.equal(staleCountReview.can_initialize, false);
+
+baseFake.setWorkflowBaseOrders([]);
+const staleCountBefore = await readRedisContents();
+const staleCountListCalls = baseFake.getWorkflowOrderListCallCount();
+const staleCountDetailCalls = baseFake.getWorkflowDetailCallCount();
+const staleCountWrites = observeRedisWriteCalls();
+let staleCountInitResponse;
+try {
+  staleCountInitResponse = await withinGuard(
+    post(initRoute, "/api/orders/init", {
+      refetch_cycle_id: staleCountCycleId,
+    }),
+    "stale-uninitialized-count-init",
+    2_000
+  );
+} finally {
+  staleCountWrites.restore();
+}
+assert.equal(staleCountInitResponse.status, 409);
+assert.equal(
+  (await staleCountInitResponse.json()).error_code,
+  "unsafe_initialization_state"
+);
+assert.equal(baseFake.getWorkflowOrderListCallCount(), staleCountListCalls);
+assert.equal(baseFake.getWorkflowDetailCallCount(), staleCountDetailCalls);
+assert.equal(staleCountWrites.calls.length, 0);
+assert.equal(await redis.get(WORKFLOW_LEASE_KEY), null);
+assert.deepEqual(await readRedisContents(), staleCountBefore);
 
 // If safety changes after the read-only preflight but before BASE, the
 // post-lease recheck rejects the stale request and does not call BASE.
