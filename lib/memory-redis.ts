@@ -10,12 +10,44 @@ type StoredValue = {
   expiresAt: number | null;
 };
 
+import { encodeWorkflowMset } from './redis-like';
+
 /**
  * ローカルmock専用の非永続Redis互換subset。
  * process再起動、Next.jsのHMR、複数process間では内容を保持・共有しない。
  * Production相当の永続性、atomicity、同時実行保証には使用しないこと。
  */
 export class MemoryRedis implements RedisLike {
+  async getRawString(key: string, maxBytes = 1024 * 1024): Promise<string | null> {
+    this.deleteExpiredValue(key);
+    if (this.sets.has(key)) throw new Error('M1_WRONG_TYPE');
+    const value = this.values.get(key)?.value;
+    if (value === undefined) return null;
+    const raw = typeof value === 'string' ? value : JSON.stringify(value);
+    if (Buffer.byteLength(raw) > maxBytes) throw new Error('M1_VALUE_LIMIT');
+    return raw;
+  }
+
+  async workflowMset(
+    guards: Array<{ key: string; expected: string | null }>,
+    writes: Array<{ key: string; value: string }>
+  ): Promise<boolean> {
+    encodeWorkflowMset(guards, writes);
+    // Deliberately no await between comparison and the single visible update.
+    for (const guard of guards) {
+      this.deleteExpiredValue(guard.key);
+      if (this.sets.has(guard.key)) throw new Error('M1_WRONG_TYPE');
+      const value = this.values.get(guard.key)?.value;
+      const raw = value === undefined ? null : typeof value === 'string' ? value : JSON.stringify(value);
+      if (raw !== guard.expected) return false;
+    }
+    for (const write of writes) {
+      this.deleteExpiredValue(write.key);
+      if (this.sets.has(write.key)) throw new Error('M1_WRONG_TYPE');
+    }
+    for (const write of writes) this.values.set(write.key, { value: write.value, expiresAt: null });
+    return true;
+  }
   private readonly values = new Map<string, StoredValue>();
   private readonly sets = new Map<string, Set<string>>();
   private readonly now: () => number;
@@ -226,7 +258,8 @@ export class MemoryRedis implements RedisLike {
     currentSessionValue: string,
     candidateSessionKey: string,
     candidateSessionValue: unknown,
-    refetchStateKey: string
+    refetchStateKey: string,
+    guards: Array<{ key: string; expected: string | null }> = []
   ) {
     this.deleteExpiredValue(leaseKey);
     const lease = this.values.get(leaseKey);
@@ -234,6 +267,13 @@ export class MemoryRedis implements RedisLike {
       return { status: "lease_lost" as const };
     }
 
+    for (const guard of guards) {
+      this.deleteExpiredValue(guard.key);
+      if (this.sets.has(guard.key)) throw new Error('M1_WRONG_TYPE');
+      const value = this.values.get(guard.key)?.value;
+      const raw = value === undefined ? null : typeof value === 'string' ? value : JSON.stringify(value);
+      if (raw !== guard.expected) throw new Error('M1_STATE_CHANGED');
+    }
     this.deleteExpiredValue(currentSessionKey);
     if (this.values.has(currentSessionKey) || this.sets.has(currentSessionKey)) {
       return { status: "session_exists" as const };

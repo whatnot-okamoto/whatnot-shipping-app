@@ -71,6 +71,19 @@ type KeyPolicy = {
 };
 
 class GuardedRedis implements RedisLike {
+  getRawString(key: string, maxBytes?: number): Promise<string | null> {
+    return this.target.getRawString(this.policy.key(key), maxBytes);
+  }
+
+  workflowMset(
+    guards: Array<{ key: string; expected: string | null }>,
+    writes: Array<{ key: string; value: string }>
+  ): Promise<boolean> {
+    return this.target.workflowMset(
+      guards.map(g => ({ ...g, key: this.policy.key(g.key) })),
+      writes.map(w => ({ ...w, key: this.policy.key(w.key) }))
+    );
+  }
   private readonly target: RedisLike;
   private readonly policy: KeyPolicy;
 
@@ -182,7 +195,8 @@ class GuardedRedis implements RedisLike {
     currentSessionValue: string,
     candidateSessionKey: string,
     candidateSessionValue: unknown,
-    refetchStateKey: string
+    refetchStateKey: string,
+    guards: Array<{ key: string; expected: string | null }> = []
   ) {
     return this.target.fencedStartSession(
       this.policy.key(leaseKey),
@@ -191,7 +205,8 @@ class GuardedRedis implements RedisLike {
       currentSessionValue,
       this.policy.key(candidateSessionKey),
       candidateSessionValue,
-      this.policy.key(refetchStateKey)
+      this.policy.key(refetchStateKey),
+      guards.map(g => ({ ...g, key: this.policy.key(g.key) }))
     );
   }
 

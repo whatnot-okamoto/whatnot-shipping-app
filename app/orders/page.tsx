@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { requestM1Refetch } from "./components/init-and-refetch-flow";
 import OrderCard, { type Order } from "./components/OrderCard";
 import SessionStatusBar from "./components/SessionStatusBar";
 import AppNavigation from "@/app/_components/AppNavigation";
@@ -289,7 +290,7 @@ export default function OrdersPage() {
     setRefetchFailure(null);
     setIsRefetching(true);
     try {
-      const res = await fetch("/api/orders/refetch", { method: "POST" });
+      const res = await requestM1Refetch(fetch);
       const data = (await res.json()) as RefetchApiResponse;
       if (!data.success || !data.diff_result) {
         setRefetchFailure(

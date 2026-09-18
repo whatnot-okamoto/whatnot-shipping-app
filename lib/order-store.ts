@@ -41,6 +41,7 @@ import {
  * shipping_method_name/shipping_fee/shipping_categoryは空にする（C-5未確認）。
  */
 export type OrderSnapshot = {
+  workflow_epoch?: string;
   unique_key: string;
   bundle_group_id: string;
   receiver_name: string;
@@ -390,7 +391,7 @@ function resolveInitialCarrier(category: CarrierCategory): Carrier | "" {
  * 同じ判定キーからは常に同じ ID が生成されるため、init 再実行時に既存 U2 を NX で保護できる（BUNDLE-ID-01）。
  * ID 形式: bg_{sha256(normalized_bundle_key).slice(0, 32)}
  */
-function generateBundleGroupId(order: BaseOrder): string {
+export function generateBundleGroupId(order: BaseOrder): string {
   const date = new Date(order.ordered * 1000).toISOString().slice(0, 10);
   const name = (getReceiverName(order) ?? "").trim();
   const zip  = (getReceiverZipCode(order) ?? "").trim();

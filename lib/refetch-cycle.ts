@@ -1,6 +1,7 @@
 import type { OrderSnapshot } from "./order-store";
 import type { RefetchState } from "./refetch-store";
 import type { GenerationIssueCode } from "./pdf-order-assessment";
+import { workflowFingerprint } from "./order-snapshot-diff";
 
 export type SelectionVerificationFailure = {
   unique_key: string;
@@ -23,7 +24,9 @@ export function findSelectionVerificationFailures(
   for (const uniqueKey of expandedUniqueKeys) {
     const result = results[uniqueKey];
     const snapshot = snapshots.get(uniqueKey);
-    if (!cycleId || !result) {
+    if (!cycleId || !result || !refetchState?.workflow_epoch ||
+        !refetchState.current_order_keys?.includes(uniqueKey) ||
+        result.status === 'unprocessed') {
       failures.push({
         unique_key: uniqueKey,
         reason: "not_verified_in_current_cycle",
@@ -50,7 +53,8 @@ export function findSelectionVerificationFailures(
       });
       continue;
     }
-    if (snapshot?.pdf_verification_cycle_id !== cycleId) {
+    if (snapshot?.pdf_verification_cycle_id !== cycleId || snapshot?.workflow_epoch !== refetchState.workflow_epoch ||
+        workflowFingerprint(snapshot) !== refetchState.confirmation_manifest?.[uniqueKey]) {
       failures.push({
         unique_key: uniqueKey,
         reason: "not_verified_in_current_cycle",
@@ -59,7 +63,7 @@ export function findSelectionVerificationFailures(
       continue;
     }
     if (
-      result.status === "verified_blocked" ||
+      result.status === "verified_blocked" || refetchState.held_bundle_order_keys?.includes(uniqueKey) ||
       snapshot.pdf_generation_outcome !== "eligible"
     ) {
       failures.push({

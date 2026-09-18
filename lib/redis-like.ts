@@ -29,6 +29,13 @@ export interface RedisPipelineLike {
 }
 
 export interface RedisLike {
+  /** Byte-preserving STRING read; never automatically deserialize JSON. */
+  getRawString(key: string, maxBytes?: number): Promise<string | null>;
+  /** M1 only: compare all STRING guards, then write all values with ONE MSET. */
+  workflowMset(
+    guards: Array<{ key: string; expected: string | null }>,
+    writes: Array<{ key: string; value: string }>
+  ): Promise<boolean>;
   get<T = unknown>(key: string): Promise<T | null>;
   set(
     key: string,
@@ -80,7 +87,46 @@ export interface RedisLike {
     currentSessionValue: string,
     candidateSessionKey: string,
     candidateSessionValue: unknown,
-    refetchStateKey: string
+    refetchStateKey: string,
+    guards?: Array<{ key: string; expected: string | null }>
   ): Promise<FencedSessionStartResult>;
   pipeline(): RedisPipelineLike;
+}
+
+export const WORKFLOW_MSET_SCRIPT = `
+local spec = cjson.decode(ARGV[1])
+for _, guard in ipairs(spec.guards) do
+  local value = redis.call('GET', KEYS[guard.key])
+  if guard.expected == cjson.null then
+    if value then return 0 end
+  elseif value ~= guard.expected then return 0 end
+end
+local values = {}
+for _, write in ipairs(spec.writes) do
+  local kind = redis.call('TYPE', KEYS[write.key]).ok
+  if kind ~= 'none' and kind ~= 'string' then return -1 end
+  table.insert(values, KEYS[write.key])
+  table.insert(values, write.value)
+end
+redis.call('MSET', unpack(values))
+return 1
+`;
+
+/** Exact one-command pipeline body, including Lua and JSON escaping. No network. */
+export function encodeWorkflowMset(
+  guards: Array<{ key: string; expected: string | null }>,
+  writes: Array<{ key: string; value: string }>
+) {
+  if (!writes.length || writes.length > 103 || new Set(writes.map(w => w.key)).size !== writes.length)
+    throw new Error('M1_INVALID_WRITES');
+  const keys = [...new Set([...guards.map(g => g.key), ...writes.map(w => w.key)])];
+  if (keys.length > 106 || keys.some(k => !k || Buffer.byteLength(k) > 512))
+    throw new Error('M1_KEY_LIMIT');
+  const payload = JSON.stringify({
+    guards: guards.map(g => ({ key: keys.indexOf(g.key) + 1, expected: g.expected })),
+    writes: writes.map(w => ({ key: keys.indexOf(w.key) + 1, value: w.value })),
+  });
+  const bytes = Buffer.byteLength(JSON.stringify([['eval', WORKFLOW_MSET_SCRIPT, keys.length, ...keys, payload]]));
+  if (bytes > 1024 * 1024) throw new Error('M1_REQUEST_LIMIT');
+  return { keys, payload, bytes };
 }

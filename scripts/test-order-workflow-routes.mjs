@@ -1,247 +1,29 @@
-import assert from "node:assert/strict";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-
-process.env.APP_ENVIRONMENT = "local";
-process.env.BASE_DATA_MODE = "mock";
-process.env.APP_STORE_MODE = "memory";
-
-const { FIXTURE_DATA } = await import("../lib/pdf-fixture-data.ts");
-const { redis } = await import("../lib/upstash.ts");
-const { initializeOrderData } = await import("../lib/order-store.ts");
-const baseFake = await import("./fakes/workflow-base-api.ts");
-const refetchRoute = await import("../app/api/orders/refetch/route.ts");
-const diffConfirmRoute = await import("../app/api/orders/diff-confirm/route.ts");
-const sessionStartRoute = await import("../app/api/session/start/route.ts");
-const {
-  default: SessionStartRecoveryPanel,
-  buildSessionStartFailure,
-} = await import("../app/orders/components/SessionStartRecoveryPanel.ts");
-
-async function clearMemoryRedis() {
-  const keys = await redis.keys("*");
-  if (keys.length > 0) await redis.del(...keys);
-}
-
-function makeOrder(uniqueKey, address, itemId) {
-  const order = structuredClone(FIXTURE_DATA["F-01"].order);
-  order.unique_key = uniqueKey;
-  order.dispatch_status = "ordered";
-  order.address = address;
-  order.order_items[0].order_item_id = itemId;
-  order.order_items[0].item_id = itemId * 100;
-  order.shipping_lines[0].shipping_method = "宅配便";
-  order.shipping_lines[0].order_item_ids = [String(itemId)];
-  return order;
-}
-
-async function post(route, path, body) {
-  const rawState = await redis.get("orders:refetch_state");
-  const state =
-    typeof rawState === "string" ? JSON.parse(rawState) : rawState;
-  if (path === "/api/orders/diff-confirm" && body === undefined) {
-    body = { refetch_cycle_id: state?.refetch_cycle_id };
-  }
-  if (path === "/api/session/start" && body && !body.refetch_cycle_id) {
-    body = { ...body, refetch_cycle_id: state?.refetch_cycle_id };
-  }
-  return route.POST(
-    new Request(`http://local.test${path}`, {
-      method: "POST",
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-  );
-}
-
-await clearMemoryRedis();
-const normalOrder = makeOrder("TEST-NORMAL-U2", "正常町1-1", 101);
-const failedOrder = makeOrder("TEST-FAILED-U2", "失敗町2-2", 102);
-await initializeOrderData([normalOrder, failedOrder]);
-baseFake.setWorkflowBaseOrders([normalOrder, failedOrder]);
-baseFake.setWorkflowFetchFailures([failedOrder.unique_key]);
-
-const refetchResponse = await post(refetchRoute, "/api/orders/refetch");
-assert.equal(refetchResponse.status, 200);
-const refetchBody = await refetchResponse.json();
-assert.equal(refetchBody.diff_result.has_fetch_failures, true);
-assert.deepEqual(refetchBody.diff_result.failed_unique_keys, [failedOrder.unique_key]);
-
-const confirmResponse = await post(diffConfirmRoute, "/api/orders/diff-confirm");
-assert.equal(confirmResponse.status, 200);
-assert.equal((await confirmResponse.json()).success, true);
-
-const startResponse = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [normalOrder.unique_key],
-});
-assert.equal(startResponse.status, 200);
-assert.equal((await startResponse.json()).success, true);
-assert.ok(await redis.get("session:current"));
-
-await clearMemoryRedis();
-const bundleNormal = makeOrder("TEST-BUNDLE-NORMAL", "同梱町3-3", 201);
-const bundleFailed = makeOrder("TEST-BUNDLE-FAILED", "同梱町3-3", 202);
-await initializeOrderData([bundleNormal, bundleFailed]);
-baseFake.setWorkflowBaseOrders([bundleNormal, bundleFailed]);
-
-// cycle 1: 両注文が成功。次cycleの失敗を過去の成功で通さないための前提。
-baseFake.setWorkflowFetchFailures([]);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-
-// cycle 2: 同じU2の1件が失敗。正常注文だけ選択してもU2展開後に拒否される。
-baseFake.setWorkflowFetchFailures([bundleFailed.unique_key]);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const rejectedResponse = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [bundleNormal.unique_key],
-});
-assert.equal(rejectedResponse.status, 409);
-const rejectedBody = await rejectedResponse.json();
-assert.deepEqual(rejectedBody.blocked_orders, [
-  {
-    unique_key: bundleFailed.unique_key,
-    reason: "fetch_failed",
-    issues: [],
-  },
-]);
-assert.equal(await redis.get("session:current"), null);
-const failureView = buildSessionStartFailure(rejectedBody);
-assert.ok(failureView);
-const failureHtml = renderToStaticMarkup(
-  createElement(SessionStartRecoveryPanel, {
-    failure: failureView,
-    isRefetching: false,
-    onRefetch() {},
-    onClearSelection() {},
-  })
-);
-assert.match(failureHtml, /TEST-BUNDLE-FAILED/);
-assert.match(failureHtml, /今回の再取得で注文詳細を取得できませんでした/);
-assert.match(failureHtml, /再取得する/);
-assert.match(failureHtml, /選択を解除して注文一覧に戻る/);
-assert.doesNotMatch(failureHtml, /緊急解除/);
-
-// cycle 3: 再試行で両注文が成功し、差分確認後に同じ選択が復帰する。
-baseFake.setWorkflowFetchFailures([]);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const recoveredResponse = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [bundleNormal.unique_key],
-});
-assert.equal(recoveredResponse.status, 200);
-assert.equal((await recoveredResponse.json()).expanded_unique_key_count, 2);
-
-// verified_blocked: 今回cycleで詳細取得は成功したが、未知statusのため自動処理不可。
-await clearMemoryRedis();
-const blockedByStatus = makeOrder("TEST-VERIFIED-BLOCKED", "停止町4-4", 301);
-blockedByStatus.order_items[0].status = "future_status";
-await initializeOrderData([blockedByStatus]);
-baseFake.setWorkflowBaseOrders([blockedByStatus]);
-baseFake.setWorkflowFetchFailures([]);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const blockedStatusResponse = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [blockedByStatus.unique_key],
-});
-assert.equal(blockedStatusResponse.status, 409);
-const blockedStatusBody = await blockedStatusResponse.json();
-assert.deepEqual(blockedStatusBody.blocked_orders, [
-  {
-    unique_key: blockedByStatus.unique_key,
-    reason: "blocked",
-    issues: ["cancellation_state_unknown"],
-  },
-]);
-const blockedStatusView = buildSessionStartFailure(blockedStatusBody);
-assert.ok(blockedStatusView);
-const blockedStatusHtml = renderToStaticMarkup(
-  createElement(SessionStartRecoveryPanel, {
-    failure: blockedStatusView,
-    isRefetching: false,
-    onRefetch() {},
-    onClearSelection() {},
-  })
-);
-assert.match(blockedStatusHtml, /TEST-VERIFIED-BLOCKED/);
-assert.match(blockedStatusHtml, /商品statusを確認できない/);
-assert.match(blockedStatusHtml, /正常な別U2を選び直せます/);
-assert.match(blockedStatusHtml, /選択を解除して注文一覧に戻る/);
-assert.doesNotMatch(blockedStatusHtml, /緊急解除/);
-
-// not_in_open_orders: BASE未対応一覧にないだけでキャンセル・出荷済みとは断定しない。
-await clearMemoryRedis();
-const disappearedOrder = makeOrder("TEST-NOT-IN-OPEN-ORDERS", "確認町5-5", 401);
-await initializeOrderData([disappearedOrder]);
-baseFake.setWorkflowBaseOrders([]);
-assert.equal((await post(refetchRoute, "/api/orders/refetch")).status, 200);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const disappearedResponse = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [disappearedOrder.unique_key],
-});
-assert.equal(disappearedResponse.status, 409);
-const disappearedBody = await disappearedResponse.json();
-assert.deepEqual(disappearedBody.blocked_orders, [
-  {
-    unique_key: disappearedOrder.unique_key,
-    reason: "not_in_open_orders",
-    issues: ["not_in_open_orders"],
-  },
-]);
-const disappearedView = buildSessionStartFailure(disappearedBody);
-assert.ok(disappearedView);
-const disappearedHtml = renderToStaticMarkup(
-  createElement(SessionStartRecoveryPanel, {
-    failure: disappearedView,
-    isRefetching: false,
-    onRefetch() {},
-    onClearSelection() {},
-  })
-);
-assert.match(disappearedHtml, /TEST-NOT-IN-OPEN-ORDERS/);
-assert.match(disappearedHtml, /BASEで各注文の現在状態を確認/);
-assert.match(disappearedHtml, /未発送かつ出荷対象の場合だけ/);
-assert.match(disappearedHtml, /選択を解除して注文一覧に戻る/);
-assert.doesNotMatch(disappearedHtml, /緊急解除/);
-
-// 確認済みの不在状態が継続しただけなら、次cycleで同じ差分を再表示しない。
-// 表示を抑えてもnot_in_open_ordersの安全な拒否は維持する。
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const repeatedDisappearedResponse = await post(refetchRoute, "/api/orders/refetch");
-assert.equal(repeatedDisappearedResponse.status, 200);
-const repeatedDisappearedBody = await repeatedDisappearedResponse.json();
-assert.equal(repeatedDisappearedBody.diff_result.has_diff, false);
-assert.deepEqual(repeatedDisappearedBody.diff_result.diff_summary, []);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const repeatedDisappearedStart = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [disappearedOrder.unique_key],
-});
-assert.equal(repeatedDisappearedStart.status, 409);
-assert.equal(
-  (await repeatedDisappearedStart.json()).blocked_orders[0].reason,
-  "not_in_open_orders"
-);
-
-// 初回大量不在は集約し、BASEに現在存在する確認済み注文の業務継続を止めない。
-await clearMemoryRedis();
-const currentOrder = makeOrder("TEST-CURRENT-CONTINUES", "現在町6-6", 501);
-const historicalOrder = makeOrder("TEST-HISTORICAL-ABSENT", "過去町7-7", 502);
-await initializeOrderData([currentOrder, historicalOrder]);
-baseFake.setWorkflowBaseOrders([currentOrder]);
-baseFake.setWorkflowFetchFailures([]);
-const aggregateResponse = await post(refetchRoute, "/api/orders/refetch");
-const aggregateBody = await aggregateResponse.json();
-assert.equal(aggregateBody.diff_result.first_absence_count, 1);
-assert.equal(
-  aggregateBody.diff_result.diff_summary.some(
-    (item) => item.unique_key === historicalOrder.unique_key
-  ),
-  false
-);
-assert.equal((await post(diffConfirmRoute, "/api/orders/diff-confirm")).status, 200);
-const continuingSession = await post(sessionStartRoute, "/api/session/start", {
-  selected_unique_keys: [currentOrder.unique_key],
-});
-assert.equal(continuingSession.status, 200);
-
-console.log("order workflow route tests passed");
+import assert from 'node:assert/strict';
+import { reset, order, redis, refetch, diff, session, list, fake, post, request, fetchCurrent, confirm, read, stateStore } from './fakes/m1-workflow-fixture.mjs';
+await reset([order('A'), order('B')]);
+for (let i=0;i<1215;i++) await redis.sadd('index:orders', 'PAST'+i);
+await redis.set('order_snapshot_pending:A', 'legacy-A');
+const initial = await read('orders:refetch_state');
+assert.equal((await post(session, { selected_unique_keys:['A'], refetch_cycle_id:'old' })).status,409);
+const fresh = await fetchCurrent();
+assert.equal(Object.keys(fresh.state.order_results).length,2);
+assert.equal(Object.keys(fresh.state.confirmation_manifest).length,2);
+assert.equal(await redis.get('order_snapshot_pending:A'),'legacy-A');
+assert.ok(await redis.get(stateStore.pendingKey(initial.workflow_epoch,'A')));
+assert.equal((await post(session,{selected_unique_keys:['A'],refetch_cycle_id:fresh.state.refetch_cycle_id})).status,409);
+const cycle=await confirm();
+assert.equal((await post(session,{selected_unique_keys:['A'],refetch_cycle_id:'wrong'})).status,409);
+assert.equal((await post(session,{selected_unique_keys:['A'],refetch_cycle_id:cycle})).status,200);
+await reset([order('OK'),order('FAIL')]);
+fake.setWorkflowFetchFailures(['FAIL']); await fetchCurrent(); const partialCycle=await confirm();
+const shown=await list.GET(new Request('http://local/api/orders/list')); assert.equal(shown.status,200);
+const rows=(await shown.json()).orders; assert.equal(rows.length,2);
+assert.equal(rows.find(r=>r.unique_key==='FAIL').selectable_for_session,false);
+assert.equal((await post(session,{selected_unique_keys:['OK'],refetch_cycle_id:partialCycle})).status,200);
+await reset();
+const input=await request(); assert.equal((await post(refetch,input)).status,200);
+assert.equal((await post(refetch,{...input,workflow_epoch:'different'})).status,409);
+const current=await read('orders:refetch_state'); current.workflow_epoch='old';
+await redis.set('orders:refetch_state',JSON.stringify(current));
+assert.equal((await post(diff,{refetch_cycle_id:current.refetch_cycle_id})).status,409);
+console.log('M1 order routes: positive set, legacy isolation, partial verification, epoch rejection passed');

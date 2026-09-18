@@ -10,6 +10,7 @@ export const ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE =
   "orders_operation_in_progress";
 
 export type WorkflowOperation =
+  | "migration-diff-modal-01-v1"
   | "init"
   | "refetch"
   | "diff-confirm"

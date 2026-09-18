@@ -11,6 +11,7 @@
 import { redis } from "@/lib/upstash";
 import {
   REFETCH_STATE_KEY,
+  readWorkflowContext, assertPublishedContext, contextGuards,
   type RefetchState,
 } from "@/lib/refetch-store";
 import {
@@ -82,6 +83,10 @@ export async function startSessionFenced(
   refetchState: RefetchState,
   lease: WorkflowLease
 ): Promise<U3Data> {
+  const context = await readWorkflowContext();
+  assertPublishedContext(context);
+  if (context.state?.refetch_cycle_id !== refetchState.refetch_cycle_id || context.state?.workflow_epoch !== refetchState.workflow_epoch)
+    throw new Error("M1_STATE_CHANGED");
   const sessionId = crypto.randomUUID();
   const sessionData: U3Data = {
     session_id: sessionId,
@@ -101,7 +106,8 @@ export async function startSessionFenced(
     sessionId,
     `session:${sessionId}`,
     JSON.stringify(sessionData),
-    REFETCH_STATE_KEY
+    REFETCH_STATE_KEY,
+    contextGuards(context, lease)
   );
   if (result.status === "lease_lost") throw new WorkflowLeaseLostError();
   if (result.status === "session_exists") {

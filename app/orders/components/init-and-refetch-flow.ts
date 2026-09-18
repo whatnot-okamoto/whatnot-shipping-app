@@ -148,12 +148,7 @@ export async function runInitAndRefetch<TDiffResult>(
       return failure(RELOAD_REQUIRED_ERROR);
     }
 
-    const refetchRes = await fetchFn("/api/orders/refetch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source_refetch_cycle_id: refetchCycleId }),
-      signal,
-    });
+    const refetchRes = await requestM1Refetch(fetchFn, signal, refetchCycleId);
     let refetchData: RefetchApiResponse<TDiffResult> | null = null;
     let refetchRecord: Record<string, unknown> | null = null;
     try {
@@ -198,5 +193,37 @@ export async function runInitAndRefetch<TDiffResult>(
     return failure(
       "ネットワークエラーが発生しました。同じ画面では再押下せず、画面を再読み込みして状態を確認してください。"
     );
+  }
+}
+
+/** Each explicit retry uses fresh compare tokens; transport ambiguity is inspected first. */
+export async function requestM1Refetch(fetchFn: FetchLike = fetch, signal?: AbortSignal, sourceCycle?: string): Promise<Response> {
+  const read = await fetchFn('/api/orders/refetch', { signal, cache: 'no-store' });
+  if (!read.ok) return read;
+  const context: unknown = await read.json();
+  if (!isRecord(context) || context.success !== true || typeof context.workflow_epoch !== 'string' ||
+      !Number.isSafeInteger(context.source_publication_revision) ||
+      !(context.source_cycle_id === null || typeof context.source_cycle_id === 'string') ||
+      !(context.previous_attempt_id === null || typeof context.previous_attempt_id === 'string'))
+    return Response.json({ success: false, error: RELOAD_REQUIRED_ERROR }, { status: 409 });
+  if (sourceCycle && context.source_cycle_id !== sourceCycle)
+    return Response.json({ success: false, error: RELOAD_REQUIRED_ERROR }, { status: 409 });
+  if (context.attempt_status === 'published' && !context.diff_confirmed_flag && !context.post_init_refetch_ready)
+    return fetchFn('/api/orders/refetch?request_id=' + encodeURIComponent(String(context.previous_attempt_id)), { signal, cache: 'no-store' });
+  const request = { request_id: crypto.randomUUID(), workflow_epoch: context.workflow_epoch,
+    source_cycle_id: context.source_cycle_id, source_publication_revision: context.source_publication_revision,
+    previous_attempt_id: context.previous_attempt_id };
+  try {
+    const response = await fetchFn('/api/orders/refetch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request), signal });
+    // Consume a clone here so body-loss also follows the same inspection path.
+    await response.clone().json();
+    return response;
+  } catch {
+    const inspection = await fetchFn('/api/orders/refetch?request_id=' + encodeURIComponent(request.request_id),
+      { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+    const body = await inspection.clone().json();
+    if (inspection.ok && body.success && body.diff_result) return inspection;
+    return Response.json({ success: false, error: RELOAD_REQUIRED_ERROR }, { status: 409 });
   }
 }

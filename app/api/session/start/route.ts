@@ -14,7 +14,7 @@
 // C5・C6 の検証対象は「U2展開後のロック対象U1全件」。選択U1のみを検証対象にしない。
 
 import { startSessionFenced } from "@/lib/session-store";
-import { getRefetchState } from "@/lib/refetch-store";
+import { readWorkflowContext, assertPublishedContext } from "@/lib/refetch-store";
 import { getOrderSnapshots, getBundleStates, getOrderStates } from "@/lib/order-store";
 import { requireAuth } from "@/lib/auth";
 import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
@@ -57,7 +57,8 @@ export async function POST(request: Request) {
   };
 
   // C1: 選択注文が1件以上存在すること
-  if (selected_unique_keys.length === 0) {
+  if (selected_unique_keys.length === 0 || selected_unique_keys.length > 100 ||
+      selected_unique_keys.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) {
     return Response.json(
       { error: "NO_ORDERS_SELECTED: 注文を1件以上選択してください" },
       { status: 400 }
@@ -78,7 +79,9 @@ export async function POST(request: Request) {
   try {
 
   // C2・C3・C4: 再取得・差分確認が完了していない場合はセッション開始を拒否（Step 4-A3実装済み）
-  const refetchState = await getRefetchState();
+  const context = await readWorkflowContext();
+  assertPublishedContext(context);
+  const refetchState = context.state;
   if (
     !refetchState ||
     refetchState.refetch_done_flag !== true ||
@@ -103,7 +106,7 @@ export async function POST(request: Request) {
     const snap = snapshotMap.get(uk);
     if (snap?.bundle_group_id) {
       bundleGroupIdSet.add(snap.bundle_group_id);
-    }
+    } else return Response.json({ error: "SNAPSHOT_MISSING" }, { status: 409 });
   }
   const locked_bundle_group_ids = [...bundleGroupIdSet];
 
@@ -119,10 +122,17 @@ export async function POST(request: Request) {
     }
   }
   const expandedUniqueKeys = [...expandedUniqueKeySet];
+  if (bundleMap.size !== locked_bundle_group_ids.length || !expandedUniqueKeys.length || expandedUniqueKeys.length > 100 ||
+      selected_unique_keys.some(uk => !expandedUniqueKeySet.has(uk)))
+    return Response.json({ error: 'BUNDLE_MEMBERSHIP_MISMATCH' }, { status: 409 });
 
   // 今回の再取得cycleで確認・差分承認された注文だけをロック対象にする。
   // 過去cycleの成功結果や、U2展開で加わった未確認注文を通さない。
   const expandedSnapshotMap = await getOrderSnapshots(expandedUniqueKeys);
+  for (const [groupId, bundle] of bundleMap) {
+    if (bundle.order_unique_keys.some(id => expandedSnapshotMap.get(id)?.bundle_group_id !== groupId))
+      return Response.json({ error: 'BUNDLE_MEMBERSHIP_MISMATCH' }, { status: 409 });
+  }
   const verificationFailures = findSelectionVerificationFailures(
     refetchState,
     expandedSnapshotMap,
@@ -203,7 +213,7 @@ export async function POST(request: Request) {
       );
     }
     const message = error instanceof Error ? error.message : "Unknown error";
-    const status = message.startsWith("SESSION_CONFLICT") ? 409 : 500;
+    const status = message.startsWith("SESSION_CONFLICT") || message.startsWith("M1_") ? 409 : 500;
     return Response.json({ error: message }, { status });
   } finally {
     await releaseWorkflowLease(lease).catch(() => false);

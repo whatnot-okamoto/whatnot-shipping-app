@@ -15,7 +15,8 @@ import {
 } from "@/lib/order-store";
 import { getCurrentSession } from "@/lib/session-store";
 import { fetchOrderedOrders } from "@/lib/base-api";
-import { getRefetchState } from "@/lib/refetch-store";
+import { readWorkflowContext, assertPublishedContext } from "@/lib/refetch-store";
+import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
 import { requireAuth } from "@/lib/auth";
 import { BaseReadonlyReauthorizationRequiredError } from "@/lib/base-readonly-oauth";
 import type { BaseOrderSummary } from "@/lib/base-api";
@@ -60,6 +61,10 @@ export async function GET(req: Request) {
   if (authError) return authError;
 
   try {
+    const workflowContext = await readWorkflowContext();
+    const currentRefetchState = workflowContext.state;
+    let qualificationsAvailable = false;
+    try { assertPublishedContext(workflowContext); qualificationsAvailable = true; } catch { /* reference display only */ }
     // ステップ1: BASE一覧APIで現在の未対応注文 unique_key 一覧を取得
     // 失敗時は index:orders のみで継続しない
     let baseOpenUniqueKeys: Set<string>;
@@ -104,15 +109,15 @@ export async function GET(req: Request) {
     const indexUniqueKeys: string[] = await redis.smembers("index:orders");
     const indexOrderCount = indexUniqueKeys.length;
 
-    // ステップ2: 表示対象 = index:orders ∩ BASE現在未対応unique_key一覧（集合演算）
-    const filteredUniqueKeys = indexUniqueKeys.filter((uk) => baseOpenUniqueKeys.has(uk));
+    // 表示対象は公開時のBASE現在未対応注文集合。取得失敗の注文も残す。
+    const filteredUniqueKeys = currentRefetchState?.current_order_keys ?? [];
 
     // stale_index_count: index:orders に存在するが BASE未対応一覧にない unique_key の件数
     const staleIndexCount = indexUniqueKeys.filter((uk) => !baseOpenUniqueKeys.has(uk)).length;
 
     // セッション情報（U3）を取得
     const session = await getCurrentSession();
-    const currentRefetchState = await getRefetchState();
+
 
     // U1 と snapshot を並列取得
     const [u1Map, snapshotMap] = await Promise.all([
@@ -180,7 +185,15 @@ export async function GET(req: Request) {
       let selectable_for_session = true;
       let disabled_reason: string | null = null;
 
-      if (needs_initialization) {
+      if (!qualificationsAvailable || !currentRefetchState?.diff_confirmed_flag) {
+        selectable_for_session = false;
+        disabled_reason = "再取得・差分確認が必要です。以前の結果は参考表示です。";
+      } else if (currentRefetchState.held_bundle_order_keys?.includes(uk) ||
+          !bundle || !bundle.order_unique_keys.includes(uk) ||
+          findSelectionVerificationFailures(currentRefetchState, snapshotMap, bundle.order_unique_keys).length > 0) {
+        selectable_for_session = false;
+        disabled_reason = "今回の確認対象と同梱構成が一致しません。この同梱は保留です。";
+      } else if (needs_initialization) {
         selectable_for_session = false;
         disabled_reason = "初期化が必要です（再取得を実行してください）";
       } else if (safeU1.cancelled_flag) {
@@ -265,13 +278,17 @@ export async function GET(req: Request) {
       refetchDoneFlag = session.refetch_done_flag;
       diffConfirmedFlag = session.diff_confirmed_flag;
     } else {
-      refetchDoneFlag = currentRefetchState?.refetch_done_flag ?? false;
-      diffConfirmedFlag = currentRefetchState?.diff_confirmed_flag ?? false;
+      refetchDoneFlag = qualificationsAvailable && (currentRefetchState?.refetch_done_flag ?? false);
+      diffConfirmedFlag = qualificationsAvailable && (currentRefetchState?.diff_confirmed_flag ?? false);
     }
 
+    const latestContext = await readWorkflowContext();
+    if (latestContext.stateRaw !== workflowContext.stateRaw || latestContext.attemptRaw !== workflowContext.attemptRaw)
+      throw new Error("M1_STATE_CHANGED");
     return Response.json({
       success: true,
       status: "ok",
+      requires_refetch: !qualificationsAvailable,
       session: session
         ? {
             session_status: session.session_status,

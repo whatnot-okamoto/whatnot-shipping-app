@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import { encodeWorkflowMset, WORKFLOW_MSET_SCRIPT } from './redis-like';
 import { getLocalMemoryRedis } from "@/lib/memory-redis";
 import {
   assertDevelopmentRedis,
@@ -77,6 +78,13 @@ const FENCED_START_SESSION_SCRIPT = `
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then
   return -1
 end
+local guards = cjson.decode(ARGV[4])
+for i, guard in ipairs(guards) do
+  local value = redis.call('GET', KEYS[4+i])
+  if guard.expected == cjson.null then
+    if value then return redis.error_reply('M1_STATE_CHANGED') end
+  elseif value ~= guard.expected then return redis.error_reply('M1_STATE_CHANGED') end
+end
 local acquired = redis.call("SET", KEYS[2], ARGV[2], "NX")
 if not acquired then
   return 0
@@ -135,7 +143,27 @@ function parseAtomicBoolean(result: unknown): boolean {
   throw new Error("[redis-atomic] Redis returned an invalid script result.");
 }
 
-class UpstashRedisAdapter implements RedisLike {
+export class UpstashRedisAdapter implements RedisLike {
+  async getRawString(key: string, maxBytes = 1024 * 1024): Promise<string | null> {
+    // Prefix defeats SDK automatic JSON deserialization and preserves source bytes.
+    const value = await this.client.eval(
+      "local v=redis.call('GET',KEYS[1]); if not v then return false end; if string.len(v)>tonumber(ARGV[1]) then return redis.error_reply('M1_VALUE_LIMIT') end; return 'RAW:'..v",
+      [key], [String(maxBytes)]
+    );
+    if (value === null || value === false) return null;
+    if (typeof value !== 'string' || !value.startsWith('RAW:')) throw new Error('M1_RAW_RESPONSE');
+    return value.slice(4);
+  }
+
+  async workflowMset(
+    guards: Array<{ key: string; expected: string | null }>,
+    writes: Array<{ key: string; value: string }>
+  ): Promise<boolean> {
+    const command = encodeWorkflowMset(guards, writes);
+    // Explicit one-command pipeline prevents SDK automatic coalescing with unrelated requests.
+    const values = await this.client.pipeline().eval(WORKFLOW_MSET_SCRIPT, command.keys, [command.payload]).exec();
+    return parseAtomicBoolean(values[0]);
+  }
   private readonly client: Redis;
 
   constructor(client: Redis) {
@@ -255,15 +283,17 @@ class UpstashRedisAdapter implements RedisLike {
     currentSessionValue: string,
     candidateSessionKey: string,
     candidateSessionValue: unknown,
-    refetchStateKey: string
+    refetchStateKey: string,
+    guards: Array<{ key: string; expected: string | null }> = []
   ) {
     const result: unknown = await this.client.eval(
       FENCED_START_SESSION_SCRIPT,
-      [leaseKey, currentSessionKey, candidateSessionKey, refetchStateKey],
+      [leaseKey, currentSessionKey, candidateSessionKey, refetchStateKey, ...guards.map(g => g.key)],
       [
         expectedLeaseValue,
         currentSessionValue,
         serializeRedisValue(candidateSessionValue),
+        JSON.stringify(guards),
       ]
     );
     if (result === 1) return { status: "created" as const };
@@ -301,6 +331,13 @@ function createRedisClient(): RedisLike {
 }
 
 export const redis = createRedisClient();
+
+/** One-time CLI only: explicit target, no environment fallback or automatic retry. */
+export function createExplicitMigrationRedis(url: string, token: string): RedisLike {
+  if (!url || !token || !url.startsWith('https://')) throw new Error('M1_CLI_TARGET');
+  return new UpstashRedisAdapter(new Redis({ url, token, retry: { retries: 0 },
+    enableAutoPipelining: false, signal: () => AbortSignal.timeout(15_000) }));
+}
 
 /**
  * Creates the fixed Development atomic diagnostic transport.

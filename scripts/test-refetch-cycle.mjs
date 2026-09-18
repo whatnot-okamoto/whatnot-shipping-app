@@ -3,11 +3,13 @@ import { findSelectionVerificationFailures } from "../lib/refetch-cycle.ts";
 import {
   getStaffReviewSnapshotChanges,
   shouldPromotePendingSnapshot,
+  workflowFingerprint,
 } from "../lib/order-snapshot-diff.ts";
 
 function snapshot(uniqueKey, cycleId, overrides = {}) {
   return {
     unique_key: uniqueKey,
+    workflow_epoch: 'epoch',
     bundle_group_id: `bg-${uniqueKey}`,
     receiver_name: "確認用",
     order_date: "2026-09-11",
@@ -42,6 +44,12 @@ function state(cycleId, orderResults) {
       ? "partial"
       : "complete",
     order_results: orderResults,
+    workflow_epoch: 'epoch',
+    current_order_keys: Object.keys(orderResults),
+    confirmation_manifest: Object.fromEntries(Object.entries(orderResults).map(([id, result]) => [id,
+      workflowFingerprint(snapshot(id, cycleId, result.status === 'verified_blocked' ? {
+        cancellation_state: result.cancellation_state, pdf_generation_outcome: 'blocked', pdf_issue_codes: result.issues,
+      } : {}))])),
   };
 }
 
