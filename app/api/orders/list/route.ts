@@ -16,7 +16,7 @@ import {
 import { getCurrentSession } from "@/lib/session-store";
 import { fetchOrderedOrders } from "@/lib/base-api";
 import { readWorkflowContext, assertPublishedContext } from "@/lib/refetch-store";
-import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
+import { findSelectionVerificationFailures, bundleMatchesSnapshots } from "@/lib/refetch-cycle";
 import { requireAuth } from "@/lib/auth";
 import { BaseReadonlyReauthorizationRequiredError } from "@/lib/base-readonly-oauth";
 import type { BaseOrderSummary } from "@/lib/base-api";
@@ -150,9 +150,10 @@ export async function GET(req: Request) {
       const safeU1 = u1 ?? { unique_key: uk, ...FALLBACK_U1 };
       const safeSnap = snap ?? { unique_key: uk, ...FALLBACK_SNAPSHOT };
 
-      const bundle = safeSnap.bundle_group_id
+      const storedBundle = safeSnap.bundle_group_id
         ? bundleMap.get(safeSnap.bundle_group_id)
         : undefined;
+      const bundle = bundleMatchesSnapshots(safeSnap.bundle_group_id,storedBundle,snapshotMap) ? storedBundle : undefined;
 
       const picking_status = pickingStatusMap.get(uk) ?? "not_started";
       const orderResult = currentRefetchState?.order_results?.[uk];

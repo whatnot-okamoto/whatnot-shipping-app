@@ -31,12 +31,14 @@ for (const patch of [{has_new_uninitialized:false},{new_uninitialized_count:0},{
  assert.equal(await redis.getRawString('orders:refetch_state'),raw);
  assert.equal(await redis.get('orders:workflow_operation_lease'),null);
 }
-// A pre-existing index with incomplete storage remains repairable without overwriting U1 operations.
+// Existing orders with a missing snapshot are now unknown membership: never infer/repair it.
 await reset([order('REPAIR')]); await redis.del('order_snapshot:REPAIR');
 const repairU1=await read('order:REPAIR'); repairU1.app_memo='keep-after-repair';
 await redis.set('order:REPAIR',JSON.stringify(repairU1));
-const repairing=await fetchCurrent(); assert.deepEqual(repairing.state.initialization_keys,['REPAIR']);
-assert.equal((await post(init,{refetch_cycle_id:repairing.state.refetch_cycle_id})).status,200);
+const repairing=await fetchCurrent(); assert.deepEqual(repairing.state.initialization_keys,[]);
+assert.deepEqual(repairing.state.held_bundle_order_keys,['REPAIR']);
+assert.equal((await post(init,{refetch_cycle_id:repairing.state.refetch_cycle_id})).status,409);
 assert.equal((await read('order:REPAIR')).app_memo,'keep-after-repair');
-await fetchCurrent(); await confirm();
-console.log('M1 init: partial retry, preserved operations, empty observation, malformed list, unsafe flags and incomplete-index repair passed');
+assert.equal(await redis.get('order_snapshot:REPAIR'),null);
+await confirm();
+console.log('M1 init: partial retry, preserved operations, empty observation, malformed list, unsafe flags and unknown-membership hold passed');

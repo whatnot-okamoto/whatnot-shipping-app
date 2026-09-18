@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { requireAuth } from '@/lib/auth';
 import { fetchOrderedOrders, fetchOrderDetail } from '@/lib/base-api';
 import { isBaseOrderSummaryList } from '@/lib/base-order-summary-validation';
-import { getOrderSnapshots, getBundleStates, getIncompleteOrderInitializationKeys,
+import { getOrderSnapshots, getOrderStates, getBundleStates, getIncompleteOrderInitializationKeys,
   buildOrderSnapshotFromDetail, generateBundleGroupId, type OrderSnapshot } from '@/lib/order-store';
 import { buildPromotedOrderSnapshot } from '@/lib/order-snapshot-diff';
 import { assessOrderForPdf } from '@/lib/pdf-order-assessment';
@@ -13,6 +13,7 @@ import { readWorkflowContext, contextRevision, parseRefetchRequest, beginRefetch
 import { acquireWorkflowLease, releaseWorkflowLease, renewWorkflowLeaseIfDue,
   ORDERS_OPERATION_IN_PROGRESS_ERROR_CODE } from '@/lib/workflow-operation-lease';
 import { getDiffRecoveryReview } from '@/lib/order-diff-confirmation';
+import { findHeldCurrentBundleOrders } from '@/lib/refetch-cycle';
 
 export const maxDuration = 300;
 
@@ -89,7 +90,7 @@ export async function POST(req: Request) {
     if (ids.length > 100 || new Set(ids).size !== ids.length) throw new Error('M1_CURRENT_SET');
     const cycle = randomUUID();
     const snapshots = await getOrderSnapshots(ids);
-    const incomplete = await getIncompleteOrderInitializationKeys(ids);
+    const existingOrders = await getOrderStates(ids);
     const results: Record<string, RefetchOrderResult> = {};
     const pending = new Map<string, OrderSnapshot>();
     for (const id of ids) {
@@ -113,21 +114,15 @@ export async function POST(req: Request) {
       }
     }
     const bundles = await getBundleStates([...new Set([...snapshots.values(), ...pending.values()].map(s => s.bundle_group_id))]);
-    const held = new Set<string>();
-    for (const [id, candidate] of pending) {
-      const old = snapshots.get(id);
-      if (old && old.bundle_group_id !== candidate.bundle_group_id) held.add(id);
-      const bundle = bundles.get(candidate.bundle_group_id);
-      const members = [...new Set([...(bundle?.order_unique_keys ?? []),
-        ...[...pending].filter(([, p]) => p.bundle_group_id === candidate.bundle_group_id).map(([key]) => key)])];
-      if ((old && bundle && !bundle.order_unique_keys.includes(id)) || members.some(member =>
-        !ids.includes(member) || results[member]?.status !== 'verified_eligible')) {
-        for (const member of members) if (ids.includes(member)) held.add(member);
-        held.add(id);
-      }
-    }
+    const held = findHeldCurrentBundleOrders(ids,snapshots,pending,bundles,results,new Set(existingOrders.keys()));
+    const incomplete = await getIncompleteOrderInitializationKeys(ids.filter(id=>!held.has(id)));
     const initialization = ids.filter(id => incomplete.has(id) && results[id]?.status === 'verified_eligible' && !held.has(id));
-    for (const id of pending.keys()) if (!snapshots.has(id) && !initialization.includes(id)) pending.delete(id);
+    for (const id of pending.keys()) {
+      const old = snapshots.get(id);
+      if ((!old && !initialization.includes(id)) || (old &&
+          (old.unique_key !== id || typeof old.bundle_group_id !== 'string' || !/^bg_[a-f0-9]{32}$/.test(old.bundle_group_id))))
+        pending.delete(id);
+    }
     const manifest = Object.fromEntries([...pending].map(([id, s]) => [id, workflowFingerprint(s)]));
     const state: RefetchState = { schema_version: 1, workflow_epoch: input.workflow_epoch,
       publication_revision: input.source_publication_revision + 1, publication_request_id: input.request_id,
