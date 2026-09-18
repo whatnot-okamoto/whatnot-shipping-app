@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "test:session-start-atomic": "node --no-warnings --experimental-strip-types --experimental-loader ./scripts/workflow-route-test-loader.mjs scripts/test-session-start-atomic.mjs",
     "dev": "next dev",
     "dev:mock": "node scripts/run-mock-dev.mjs",
     "build": "next build",

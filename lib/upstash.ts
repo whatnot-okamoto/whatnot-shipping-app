@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
-import { encodeWorkflowMset, WORKFLOW_MSET_SCRIPT } from './redis-like';
+import { encodeWorkflowMset, WORKFLOW_MSET_SCRIPT, RAW_BATCH_SCRIPT, validateRawBatchKeys,
+  validateRawBatch, encodeSessionStart, SESSION_START_SCRIPT } from './redis-like';
 import { getLocalMemoryRedis } from "@/lib/memory-redis";
 import {
   assertDevelopmentRedis,
@@ -74,26 +75,6 @@ end
 return results
 `;
 
-const FENCED_START_SESSION_SCRIPT = `
-if redis.call("GET", KEYS[1]) ~= ARGV[1] then
-  return -1
-end
-local guards = cjson.decode(ARGV[4])
-for i, guard in ipairs(guards) do
-  local value = redis.call('GET', KEYS[4+i])
-  if guard.expected == cjson.null then
-    if value then return redis.error_reply('M1_STATE_CHANGED') end
-  elseif value ~= guard.expected then return redis.error_reply('M1_STATE_CHANGED') end
-end
-local acquired = redis.call("SET", KEYS[2], ARGV[2], "NX")
-if not acquired then
-  return 0
-end
-redis.call("SET", KEYS[3], ARGV[3])
-redis.call("DEL", KEYS[4])
-return 1
-`;
-
 function serializeRedisValue(value: unknown): string {
   if (
     typeof value === "string" ||
@@ -144,6 +125,16 @@ function parseAtomicBoolean(result: unknown): boolean {
 }
 
 export class UpstashRedisAdapter implements RedisLike {
+  async getRawBatch(keys: string[]): Promise<string[]> {
+    validateRawBatchKeys(keys);
+    const results=await this.client.pipeline().eval(RAW_BATCH_SCRIPT,keys,[]).exec();
+    if(results.length!==1) throw new Error('M1_RAW_RESPONSE');
+    const result: unknown=results[0];
+    if(typeof result!=='string'||!result.startsWith('RAW:')||Buffer.byteLength(result)>1048576)
+      throw new Error('M1_RAW_RESPONSE');
+    const values: unknown=JSON.parse(result.slice(4));
+    validateRawBatch(keys,values); return values;
+  }
   async getRawString(key: string, maxBytes = 1024 * 1024): Promise<string | null> {
     // Prefix defeats SDK automatic JSON deserialization and preserves source bytes.
     const value = await this.client.eval(
@@ -286,19 +277,15 @@ export class UpstashRedisAdapter implements RedisLike {
     refetchStateKey: string,
     guards: Array<{ key: string; expected: string | null }> = []
   ) {
-    const result: unknown = await this.client.eval(
-      FENCED_START_SESSION_SCRIPT,
-      [leaseKey, currentSessionKey, candidateSessionKey, refetchStateKey, ...guards.map(g => g.key)],
-      [
-        expectedLeaseValue,
-        currentSessionValue,
-        serializeRedisValue(candidateSessionValue),
-        JSON.stringify(guards),
-      ]
-    );
+    const command=encodeSessionStart([leaseKey,currentSessionKey,candidateSessionKey,refetchStateKey],
+      expectedLeaseValue,currentSessionValue,serializeRedisValue(candidateSessionValue),guards);
+    const results=await this.client.pipeline().eval(SESSION_START_SCRIPT,command.keys,command.args).exec();
+    if(results.length!==1) throw new Error('M1_SESSION_RESPONSE');
+    const result: unknown=results[0];
     if (result === 1) return { status: "created" as const };
     if (result === 0) return { status: "session_exists" as const };
     if (result === -1) return { status: "lease_lost" as const };
+    if (result === -2) throw new Error('M1_SESSION_DATA_CHANGED');
     throw new Error("[redis-atomic] Redis returned an invalid session start result.");
   }
 

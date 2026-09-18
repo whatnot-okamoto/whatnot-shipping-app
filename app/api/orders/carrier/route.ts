@@ -47,7 +47,7 @@ export async function PATCH(req: NextRequest) {
 
     await redis.set(`order:${unique_key}`, JSON.stringify({ ...u1, carrier }));
     try {
-      await clearPdfOutputDoneFlag();
+      await clearPdfOutputDoneFlag(u1.carrier !== carrier);
     } catch (e) {
       console.error("[carrier] clearPdfOutputDoneFlag failed:", e instanceof Error ? e.message : String(e));
       return Response.json(

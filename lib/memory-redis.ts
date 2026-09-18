@@ -10,7 +10,7 @@ type StoredValue = {
   expiresAt: number | null;
 };
 
-import { encodeWorkflowMset } from './redis-like';
+import { encodeWorkflowMset, encodeSessionStart, validateRawBatch, validateRawBatchKeys } from './redis-like';
 
 /**
  * ローカルmock専用の非永続Redis互換subset。
@@ -18,6 +18,17 @@ import { encodeWorkflowMset } from './redis-like';
  * Production相当の永続性、atomicity、同時実行保証には使用しないこと。
  */
 export class MemoryRedis implements RedisLike {
+  async getRawBatch(keys: string[]): Promise<string[]> {
+    validateRawBatchKeys(keys);
+    const values = keys.map(key => {
+      this.deleteExpiredValue(key);
+      if (this.sets.has(key)) throw new Error('M1_WRONG_TYPE');
+      const value=this.values.get(key)?.value;
+      if(value===undefined) throw new Error('M1_RAW_MISSING');
+      return typeof value==='string'?value:JSON.stringify(value);
+    });
+    validateRawBatch(keys,values); return values;
+  }
   async getRawString(key: string, maxBytes = 1024 * 1024): Promise<string | null> {
     this.deleteExpiredValue(key);
     if (this.sets.has(key)) throw new Error('M1_WRONG_TYPE');
@@ -261,12 +272,18 @@ export class MemoryRedis implements RedisLike {
     refetchStateKey: string,
     guards: Array<{ key: string; expected: string | null }> = []
   ) {
+    encodeSessionStart([leaseKey,currentSessionKey,candidateSessionKey,refetchStateKey],expectedLeaseValue,
+      currentSessionValue,typeof candidateSessionValue==='string'?candidateSessionValue:JSON.stringify(candidateSessionValue),guards);
     this.deleteExpiredValue(leaseKey);
     const lease = this.values.get(leaseKey);
     if (!lease || lease.value !== expectedLeaseValue) {
       return { status: "lease_lost" as const };
     }
 
+    this.deleteExpiredValue(currentSessionKey);
+    if (this.values.has(currentSessionKey) || this.sets.has(currentSessionKey)) return { status: 'session_exists' as const };
+    this.deleteExpiredValue(candidateSessionKey);
+    if (this.values.has(candidateSessionKey) || this.sets.has(candidateSessionKey)) throw new Error('M1_SESSION_CANDIDATE_EXISTS');
     for (const guard of guards) {
       this.deleteExpiredValue(guard.key);
       if (this.sets.has(guard.key)) throw new Error('M1_WRONG_TYPE');

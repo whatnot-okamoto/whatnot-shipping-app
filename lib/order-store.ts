@@ -8,6 +8,7 @@
 
 import { createHash } from "crypto";
 import { redis } from "@/lib/upstash";
+import { isValidBundleMembership } from './refetch-cycle';
 import type { BaseOrder } from "@/lib/base-api";
 import {
   assessOrderForPdf,
@@ -90,6 +91,49 @@ export type U2Data = {
   representative_order_unique_key: string;
   tracking_number: string;
 };
+
+/** Discovery freezes membership; the final atomic batch is the only source of validation values. */
+export async function readSessionStartEvidence(selected: string[]) {
+  const selectedIds=[...new Set(selected)];
+  const parse=(raw:string) => { try { return JSON.parse(raw); } catch { throw new Error('M1_EVIDENCE_SCHEMA'); } };
+  const snapshot=(raw:string,id:string):OrderSnapshot => {
+    const v=parse(raw) as OrderSnapshot;
+    if (!v || v.unique_key!==id || typeof v.bundle_group_id!=='string' || !/^bg_[a-f0-9]{32}$/.test(v.bundle_group_id))
+      throw new Error('M1_EVIDENCE_SNAPSHOT');
+    return v;
+  };
+  const selectedKeys=selectedIds.map(id=>'order_snapshot:'+id);
+  const selectedRaw=await redis.getRawBatch(selectedKeys);
+  const bundleIds=[...new Set(selectedRaw.map((raw,i)=>snapshot(raw,selectedIds[i]).bundle_group_id))];
+  const bundleKeys=bundleIds.map(id=>'bundle:'+id);
+  const bundleRaw=await redis.getRawBatch(bundleKeys);
+  const bundles=bundleRaw.map((raw,i)=>{
+    const v:unknown=parse(raw);
+    if(Buffer.byteLength(raw)>32768 || !isValidBundleMembership(v,bundleIds[i])) throw new Error('M1_EVIDENCE_BUNDLE');
+    return v;
+  });
+  const ids=[...new Set(bundles.flatMap(b=>b.order_unique_keys))];
+  if(!ids.length || ids.length>100 || selectedIds.some(id=>!ids.includes(id))) throw new Error('M1_EVIDENCE_MEMBERSHIP');
+  const keys=[...ids.map(id=>'order:'+id),...ids.map(id=>'order_snapshot:'+id),...bundleKeys];
+  const raw=await redis.getRawBatch(keys);
+  const rawMap=new Map(keys.map((key,i)=>[key,raw[i]]));
+  // No target expansion is allowed after the final batch. Discovery changes force a new request.
+  for(const [key,value] of [...selectedKeys.map((k,i)=>[k,selectedRaw[i]]),...bundleKeys.map((k,i)=>[k,bundleRaw[i]])])
+    if(rawMap.get(key)!==value) throw new Error('M1_SESSION_DATA_CHANGED');
+  const u1Map=new Map<string,U1Data>();
+  const snapshotMap=new Map<string,OrderSnapshot>();
+  for(const id of ids) {
+    const u1Raw=rawMap.get('order:'+id)!;
+    const u1=parse(u1Raw) as U1Data;
+    if(Buffer.byteLength(u1Raw)>16384 || !u1 || u1.unique_key!==id || typeof u1.hold_flag!=='boolean' ||
+       typeof u1.cancelled_flag!=='boolean' || !['','sagawa','yamato','nekopos'].includes(u1.carrier))
+      throw new Error('M1_EVIDENCE_U1');
+    u1Map.set(id,u1); snapshotMap.set(id,snapshot(rawMap.get('order_snapshot:'+id)!,id));
+  }
+  const bundleMap=new Map(bundleIds.map(id=>[id,parse(rawMap.get('bundle:'+id)!) as U2Data]));
+  return {u1Map,snapshotMap,bundleMap,expandedUniqueKeys:ids,lockedBundleGroupIds:bundleIds,
+    guards:keys.map((key,i)=>({key,expected:raw[i]}))};
+}
 
 /**
  * U4: `picking:{order_item_id}` に保存するデータ。

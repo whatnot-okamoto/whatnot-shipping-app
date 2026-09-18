@@ -15,7 +15,7 @@
 
 import { startSessionFenced } from "@/lib/session-store";
 import { readWorkflowContext, assertPublishedContext } from "@/lib/refetch-store";
-import { getOrderSnapshots, getBundleStates, getOrderStates } from "@/lib/order-store";
+import { readSessionStartEvidence } from "@/lib/order-store";
 import { requireAuth } from "@/lib/auth";
 import { findSelectionVerificationFailures } from "@/lib/refetch-cycle";
 import {
@@ -98,37 +98,12 @@ export async function POST(request: Request) {
 
   // U2展開: ②〜④
   // ② 各 unique_key の bundle_group_id を order_snapshot から取得（Upstashキー: order:{unique_key} ORDER-FIELD-01準拠）
-  const snapshotMap = await getOrderSnapshots(selected_unique_keys);
-
-  // ③ bundle_group_id を重複排除して locked_bundle_group_ids を作成
-  const bundleGroupIdSet = new Set<string>();
-  for (const uk of selected_unique_keys) {
-    const snap = snapshotMap.get(uk);
-    if (snap?.bundle_group_id) {
-      bundleGroupIdSet.add(snap.bundle_group_id);
-    } else return Response.json({ error: "SNAPSHOT_MISSING" }, { status: 409 });
-  }
-  const locked_bundle_group_ids = [...bundleGroupIdSet];
-
-  // ④ 各 U2 の order_unique_keys を展開 → ロック対象U1全件
-  const bundleMap = await getBundleStates(locked_bundle_group_ids);
-  const expandedUniqueKeySet = new Set<string>();
-  for (const bgId of locked_bundle_group_ids) {
-    const bundle = bundleMap.get(bgId);
-    if (bundle) {
-      for (const uk of bundle.order_unique_keys) {
-        expandedUniqueKeySet.add(uk);
-      }
-    }
-  }
-  const expandedUniqueKeys = [...expandedUniqueKeySet];
-  if (bundleMap.size !== locked_bundle_group_ids.length || !expandedUniqueKeys.length || expandedUniqueKeys.length > 100 ||
-      selected_unique_keys.some(uk => !expandedUniqueKeySet.has(uk)))
-    return Response.json({ error: 'BUNDLE_MEMBERSHIP_MISMATCH' }, { status: 409 });
+  const evidence = await readSessionStartEvidence(selected_unique_keys);
+  const {bundleMap,u1Map,expandedUniqueKeys,lockedBundleGroupIds:locked_bundle_group_ids} = evidence;
 
   // 今回の再取得cycleで確認・差分承認された注文だけをロック対象にする。
   // 過去cycleの成功結果や、U2展開で加わった未確認注文を通さない。
-  const expandedSnapshotMap = await getOrderSnapshots(expandedUniqueKeys);
+  const expandedSnapshotMap = evidence.snapshotMap;
   for (const [groupId, bundle] of bundleMap) {
     if (bundle.order_unique_keys.some(id => expandedSnapshotMap.get(id)?.bundle_group_id !== groupId))
       return Response.json({ error: 'BUNDLE_MEMBERSHIP_MISMATCH' }, { status: 409 });
@@ -149,7 +124,6 @@ export async function POST(request: Request) {
   }
 
   // ⑤ C5・C6 検証（ロック対象U1全件。Upstashキー: order:{unique_key} ORDER-FIELD-01準拠）
-  const u1Map = await getOrderStates(expandedUniqueKeys);
 
   // C5: ロック対象U1全件の carrier が確定済みであること（空文字・未設定は不成立）
   const unsetCarrierKeys: string[] = [];
@@ -197,7 +171,8 @@ export async function POST(request: Request) {
     const session = await startSessionFenced(
       locked_bundle_group_ids,
       refetchState,
-      lease
+      lease,
+      evidence.guards
     );
     return Response.json({
       success: true,

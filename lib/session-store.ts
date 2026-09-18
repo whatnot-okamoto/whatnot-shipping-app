@@ -81,9 +81,11 @@ export type U3Data = {
 export async function startSessionFenced(
   lockedBundleGroupIds: string[],
   refetchState: RefetchState,
-  lease: WorkflowLease
+  lease: WorkflowLease,
+  businessGuards: Array<{key:string;expected:string}>
 ): Promise<U3Data> {
   const context = await readWorkflowContext();
+  if(!businessGuards.length || businessGuards.length>300) throw new Error('M1_EVIDENCE_REQUIRED');
   assertPublishedContext(context);
   if (context.state?.refetch_cycle_id !== refetchState.refetch_cycle_id || context.state?.workflow_epoch !== refetchState.workflow_epoch)
     throw new Error("M1_STATE_CHANGED");
@@ -107,7 +109,7 @@ export async function startSessionFenced(
     `session:${sessionId}`,
     JSON.stringify(sessionData),
     REFETCH_STATE_KEY,
-    contextGuards(context, lease)
+    [...contextGuards(context, lease),...businessGuards]
   );
   if (result.status === "lease_lost") throw new WorkflowLeaseLostError();
   if (result.status === "session_exists") {
@@ -256,7 +258,7 @@ export function applyPdfOutputDoneFlagOff(session: U3Data): U3Data {
  *   - セッションデータのパースに失敗した場合
  *   - Upstash 接続エラー
  */
-export async function clearPdfOutputDoneFlag(): Promise<void> {
+export async function clearPdfOutputDoneFlag(resetChecklist = false): Promise<void> {
   const sessionId = await redis.get<string>("session:current");
   if (!sessionId) return;
 
@@ -269,6 +271,7 @@ export async function clearPdfOutputDoneFlag(): Promise<void> {
 
   // applyPdfOutputDoneFlagOff は pdf_output_done_flag=false + csv_status リセットを適用する
   const updated = applyPdfOutputDoneFlagOff(session);
+  if (resetChecklist) updated.checklist_printed_flag = false;
   await redis.set(`session:${sessionId}`, JSON.stringify(updated));
 }
 
