@@ -18,6 +18,10 @@ import { encodeWorkflowMset, encodeSessionStart, validateRawBatch, validateRawBa
  * Production相当の永続性、atomicity、同時実行保証には使用しないこと。
  */
 export class MemoryRedis implements RedisLike {
+  async exists(key: string): Promise<number> {
+    this.deleteExpiredValue(key);
+    return this.values.has(key) || this.sets.has(key) ? 1 : 0;
+  }
   async getRawBatch(keys: string[]): Promise<string[]> {
     validateRawBatchKeys(keys);
     const values = keys.map(key => {

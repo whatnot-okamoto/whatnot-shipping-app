@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { encodeWorkflowMset, type RedisLike } from '../../lib/redis-like';
+import { validateLegacySource } from '../../lib/m1-legacy-source';
+export { validateLegacySource } from '../../lib/m1-legacy-source';
 
 export const VERSION = 'diff-modal-01:v1';
 export const RECORD = 'orders:migration:diff-modal-01:v1';
@@ -21,13 +23,6 @@ function parseObject(raw: string, code: string): Record<string, unknown> {
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
   } catch { /* Never expose parser diagnostics or source contents. */ }
   throw new Error(code);
-}
-
-/** Legacy compatibility: no requirements beyond the two existing boolean flags. */
-export function validateLegacySource(raw: string): void {
-  const source = parseObject(raw, 'M1_MIGRATION_SOURCE_SCHEMA');
-  if (typeof source.refetch_done_flag !== 'boolean' || typeof source.diff_confirmed_flag !== 'boolean')
-    throw new Error('M1_MIGRATION_SOURCE_SCHEMA');
 }
 
 /** Final stdout boundary: validate exact own data properties, then reconstruct scalars. */

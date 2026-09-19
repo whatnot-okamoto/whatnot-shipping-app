@@ -1,0 +1,10 @@
+import { m1Preflight } from '@/lib/m1-production-preflight-runtime';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const GET = m1Preflight.GET;
+export const POST = m1Preflight.GET;
+export const PUT = m1Preflight.GET;
+export const PATCH = m1Preflight.GET;
+export const DELETE = m1Preflight.GET;
+export const HEAD = m1Preflight.GET;
+export const OPTIONS = m1Preflight.GET;

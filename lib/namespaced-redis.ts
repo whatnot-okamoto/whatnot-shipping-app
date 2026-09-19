@@ -71,6 +71,9 @@ type KeyPolicy = {
 };
 
 class GuardedRedis implements RedisLike {
+  exists(key: string): Promise<number> {
+    return this.target.exists(this.policy.key(key));
+  }
   getRawBatch(keys: string[]): Promise<string[]> {
     return this.target.getRawBatch(keys.map(key => this.policy.key(key)));
   }

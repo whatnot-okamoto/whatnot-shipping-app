@@ -125,6 +125,9 @@ function parseAtomicBoolean(result: unknown): boolean {
 }
 
 export class UpstashRedisAdapter implements RedisLike {
+  exists(key: string): Promise<number> {
+    return this.client.exists(key);
+  }
   async getRawBatch(keys: string[]): Promise<string[]> {
     validateRawBatchKeys(keys);
     const results=await this.client.pipeline().eval(RAW_BATCH_SCRIPT,keys,[]).exec();
@@ -318,6 +321,23 @@ function createRedisClient(): RedisLike {
 }
 
 export const redis = createRedisClient();
+
+/** Temporary maintenance reader: existing SDK/adapter, Production credentials stay here.
+ * SDK default retry is retained (5 retries, at most 6 fetch attempts per logical read).
+ * No changes to the normal workflow singleton. No raw SDK client is exported.
+ */
+export function createM1ProductionReader(signal: AbortSignal): Pick<RedisLike, 'exists' | 'getRawString'> {
+  if (runtimeConfig.appEnvironment !== 'production' || runtimeConfig.vercelEnvironment !== 'production' ||
+      runtimeConfig.appStoreMode !== 'upstash') throw new Error('M1_MAINTENANCE_UNAVAILABLE');
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) throw new Error('M1_MAINTENANCE_UNAVAILABLE');
+  const reader = createProductionRedis(new UpstashRedisAdapter(new Redis({
+    url, token, enableAutoPipelining: false,
+    signal: () => AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+  })));
+  return { exists: key => reader.exists(key), getRawString: (key, limit) => reader.getRawString(key, limit) };
+}
 
 /** One-time CLI only: explicit target, no environment fallback or automatic retry. */
 export function createExplicitMigrationRedis(url: string, token: string): RedisLike {

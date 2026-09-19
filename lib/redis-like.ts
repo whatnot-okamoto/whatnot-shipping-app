@@ -29,6 +29,8 @@ export interface RedisPipelineLike {
 }
 
 export interface RedisLike {
+  /** Presence only; no value or type is returned. */
+  exists(key: string): Promise<number>;
   /** Atomic, byte-preserving, bounded read. Missing/wrong-type keys reject the whole read. */
   getRawBatch(keys: string[]): Promise<string[]>;
   /** Byte-preserving STRING read; never automatically deserialize JSON. */
