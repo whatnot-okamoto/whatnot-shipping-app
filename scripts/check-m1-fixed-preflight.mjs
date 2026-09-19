@@ -52,7 +52,8 @@ export function classifyObservation(observation, expectedFingerprint) {
       phases.includes(state.phase) ? state.phase : 'unknown';
     if (phases.includes(r.legacy_phase)) r.legacy_unfinished = r.legacy_phase !== 'confirmed' ||
       !state.refetch_done_flag || !state.diff_confirmed_flag;
-    r.result = !r.fingerprint_match ? 'blocked' : ['unknown', 'invalid'].includes(r.legacy_phase) ? 'indeterminate' : 'checked';
+    r.result = ['unknown', 'invalid'].includes(r.legacy_phase) ? 'indeterminate' :
+      !r.fingerprint_match ? 'blocked' : 'checked';
   }
   return validateFixedResult(r);
 }

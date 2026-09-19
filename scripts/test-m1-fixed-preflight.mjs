@@ -74,6 +74,21 @@ for (const phase of ['requires_refetch', 'awaiting_initialization', 'awaiting_re
     assert.ok(!JSON.stringify(r).includes('SECRET_UNKNOWN_PHASE'));
   });
 }
+for (const phase of ['SECRET_UNKNOWN_PHASE', null]) {
+  await test('indeterminate phase takes precedence over fingerprint mismatch without raw output', async () => {
+    const raw = JSON.stringify({ refetch_done_flag: true, diff_confirmed_flag: true, phase,
+      order_results: { PRIVATE_ORDER_SENTINEL: { note: 'PRIVATE_RAW_VALUE' } } });
+    const result = await capture(async () => classifyObservation(fresh(raw), '0'.repeat(64)));
+    assert.equal(result.code, 2); assert.deepEqual(result.err, []); assert.equal(result.out.length, 1);
+    const output = JSON.parse(result.out[0]);
+    assert.equal(Object.keys(output).length, 13);
+    assert.equal(output.result, 'indeterminate'); assert.equal(output.fingerprint_match, false);
+    assert.equal(output.legacy_phase, phase === null ? 'invalid' : 'unknown');
+    assert.equal(output.legacy_unfinished, null);
+    for (const forbidden of [raw, 'PRIVATE_ORDER_SENTINEL', 'PRIVATE_RAW_VALUE', 'SECRET_UNKNOWN_PHASE'])
+      assert.ok(!result.out[0].includes(forbidden));
+  });
+}
 for (const mutate of [o => o.types.pop(), o => o.lengths.push(null), o => o.ttl = 0.5,
   o => o.lengths[0] = 1, o => o.lengths[2]++, o => o.source = null,
   o => { o.types[0] = 'string'; }, o => o.extra = 'PRIVATE_ORDER_SENTINEL']) {
