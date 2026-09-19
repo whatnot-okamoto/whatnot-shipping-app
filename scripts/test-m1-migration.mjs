@@ -217,6 +217,30 @@ for (const message of ['PRIVATE_RAW_SENTINEL https://fixture.invalid token=FAKE'
     { code: 1, out: [], err: ['M1_MIGRATION_FAILED'] }); count++;
 }
 
+const revoked = Proxy.revocable({}, {});
+revoked.revoke();
+for (const thrown of [
+  { get message() { throw new Error('PRIVATE_GETTER_SENTINEL'); } },
+  new Proxy({}, { get() { throw new Error('PRIVATE_PROXY_SENTINEL'); } }),
+  revoked.proxy,
+  { message: 42 },
+  { message: { toString() { throw new Error('PRIVATE_COERCION_SENTINEL'); } } },
+  null, undefined,
+]) {
+  assert.deepEqual(await capture(async () => { throw thrown; }),
+    { code: 1, out: [], err: ['M1_MIGRATION_FAILED'] }); count++;
+}
+{
+  let reads = 0;
+  const error = { get message() {
+    if (++reads > 1) throw new Error('PRIVATE_SECOND_READ_SENTINEL');
+    return 'M1_CLI_ARGUMENT';
+  } };
+  assert.deepEqual(await capture(async () => { throw error; }),
+    { code: 1, out: [], err: ['M1_CLI_ARGUMENT'] });
+  assert.equal(reads, 1); count++;
+}
+
 // Run the actual CLI main/adapter through fake fetch, with no credential fallback or dotenv reads.
 let dotenvReads = 0;
 const savedReads = { sync: fs.readFileSync, callback: fs.readFile, promise: fsPromises.readFile };

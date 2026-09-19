@@ -49,7 +49,13 @@ export async function runCli(argv = process.argv.slice(2), execute = main) {
     console.log(JSON.stringify(result));
     return 0;
   } catch (error) {
-    console.error(SAFE_ERRORS.has(error?.message) ? error.message : 'M1_MIGRATION_FAILED');
+    let code = 'M1_MIGRATION_FAILED';
+    try {
+      // Reading message can itself throw (accessor, Proxy, revoked Proxy).
+      const message = error?.message;
+      if (typeof message === 'string' && SAFE_ERRORS.has(message)) code = message;
+    } catch { /* Never inspect or stringify the secondary exception. */ }
+    console.error(code);
     return 1;
   }
 }
