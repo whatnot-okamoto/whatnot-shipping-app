@@ -24,7 +24,7 @@ function parseObject(raw: string, code: string): Record<string, unknown> {
 }
 
 /** Legacy compatibility: no requirements beyond the two existing boolean flags. */
-function validateLegacySource(raw: string): void {
+export function validateLegacySource(raw: string): void {
   const source = parseObject(raw, 'M1_MIGRATION_SOURCE_SCHEMA');
   if (typeof source.refetch_done_flag !== 'boolean' || typeof source.diff_confirmed_flag !== 'boolean')
     throw new Error('M1_MIGRATION_SOURCE_SCHEMA');
