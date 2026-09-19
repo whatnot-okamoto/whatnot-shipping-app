@@ -15,7 +15,9 @@ $module = New-Module -ScriptBlock {
     $script:M1InspectDirectory = $Root
 } -ArgumentList $functions, $PSScriptRoot
 $script:cases = 0
-function Assert-M1($Condition) { if (-not $Condition) { throw 'M1_LAUNCHER_TEST_FAILED' } }
+function Assert-M1($Condition) {
+    if (-not $Condition) { throw ('M1_LAUNCHER_TEST_FAILED at line ' + (Get-PSCallStack)[1].ScriptLineNumber + ' case=' + $mode) }
+}
 function Capture-M1([scriptblock] $Action) {
     $savedOut = [Console]::Out; $savedErr = [Console]::Error
     $out = [IO.StringWriter]::new(); $err = [IO.StringWriter]::new()
@@ -54,10 +56,10 @@ $script:cases++
         StandardInput = [IO.StringWriter]::new();
         StandardOutput = [IO.StreamReader]::new($outStream); StandardError = [IO.StreamReader]::new($errStream) }
     $fake | Add-Member ScriptMethod Start { $this.Started = $true; return $true }
-    $fake | Add-Member ScriptMethod WaitForExit {
-        if ($this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_URL') -or
-            $this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_TOKEN')) { throw 'LATE_ENV_CLEANUP' }
+    $fake | Add-Member ScriptMethod WaitForExit { param([int] $Milliseconds)
+        if ($Milliseconds -ne 0) { throw 'UNBOUNDED_NORMAL_WAIT' }
         $this.Waited = $true
+        return $true
     }
     try {
         $result = Invoke-M1InspectChild $fake
@@ -188,6 +190,237 @@ try {
         $script:cases++
     }
 } finally { Remove-Module $module }
+
+# Real supervisor + launcher cleanup, with controllable non-network process/pipe failures.
+$supervisor = New-Module -ScriptBlock {
+    param($Code, $Root)
+    . ([scriptblock]::Create($Code))
+    $script:M1InspectDirectory = $Root
+    $script:productionLimits = Get-M1InspectLimits
+    function script:Get-M1InspectLimits { return @{ RuntimeMs = 500; StopMs = 80; PollMs = 1; OutChars = 2048; ErrChars = 128 } }
+    function script:Test-M1InteractiveConsole { return $true }
+    function script:Read-M1HiddenValue([string] $Label, [int] $Limit) {
+        $secret = [Security.SecureString]::new()
+        $text = if ($Label.Contains('URL')) { 'https://supervisor-synthetic.invalid' } else { 'SYNTHETIC_PRIVATE_TOKEN' }
+        foreach ($c in $text.ToCharArray()) { $secret.AppendChar($c) }
+        return $secret
+    }
+    function New-FakePipe([string] $Mode, [string] $Text) {
+        $pipe = [pscustomobject]@{ Mode = $Mode; Text = $Text; Offset = 0; Disposed = $false; LargestRead = 0;
+            Pending = [Threading.Tasks.TaskCompletionSource[int]]::new() }
+        $pipe | Add-Member ScriptMethod ReadAsync { param([char[]] $Buffer, [int] $Offset, [int] $Count)
+            $this.LargestRead = [Math]::Max($this.LargestRead, $Count)
+            if ($this.Mode -eq 'pending') { return $this.Pending.Task }
+            if ($this.Mode -eq 'throw') { throw 'SYNTHETIC_PRIVATE_READ' }
+            if ($this.Mode -eq 'fault') { return [Threading.Tasks.Task]::FromException[int]([Exception]::new('SYNTHETIC_PRIVATE_READ')) }
+            $length = [Math]::Min($Count, $this.Text.Length - $this.Offset)
+            if ($length -gt 0) { $this.Text.CopyTo($this.Offset, $Buffer, $Offset, $length); $this.Offset += $length }
+            return [Threading.Tasks.Task]::FromResult[int]($length)
+        }
+        $pipe | Add-Member ScriptMethod Dispose { $this.Disposed = $true; [void] $this.Pending.TrySetCanceled() }
+        return $pipe
+    }
+    function script:New-M1InspectChild {
+        $ok = '{"status":"legacy","version":"diff-modal-01:v1","source_bytes":0,"source_fingerprint":"' + ('a' * 64) + '","migration_id":null}'
+        $outMode = 'text'; $outText = $ok; $errText = ''
+        switch ($script:mode) {
+            { $_ -in @('timeout', 'never-stop', 'kill-fail', 'stop-wait-fail') } { $outMode = 'pending' }
+            'stdout-limit' { $outText = 'SYNTHETIC_PRIVATE_OUTPUT' * 200 }
+            'stderr-limit' { $errText = 'SYNTHETIC_PRIVATE_OUTPUT' * 100 }
+            'stdout-exact' { $outText = 'x' * 2048 }
+            'stderr-exact' { $errText = 'x' * 128 }
+            'read-throw' { $outMode = 'throw' }
+            'read-fault' { $outMode = 'fault' }
+            'fixed-error' { $outText = ''; $errText = "M1_MIGRATION_SOURCE_SCHEMA`n" }
+        }
+        $script:outPipe = New-FakePipe $outMode $outText
+        $script:errPipe = New-FakePipe 'text' $errText
+        $script:fake = [pscustomobject]@{
+            StartInfo = [Diagnostics.ProcessStartInfo]::new(); StandardInput = [IO.StringWriter]::new();
+            StandardOutput = $script:outPipe; StandardError = $script:errPipe;
+            ExitCode = $(if ($script:mode -eq 'fixed-error') { 1 } else { 0 }); Mode = $script:mode;
+            Started = $false; Killed = $false; Confirmed = $false; Disposed = $false; TreeKill = $false;
+            Events = [Collections.Generic.List[string]]::new(); Waits = [Collections.Generic.List[int]]::new()
+        }
+        $script:fake | Add-Member ScriptMethod Start {
+            $this.Events.Add('start')
+            if ($this.Mode -eq 'start-false') { return $false }
+            $this.Started = $true
+            if ($this.Mode -eq 'start-throw') { throw 'SYNTHETIC_PRIVATE_START' }
+            return $true
+        }
+        $script:fake | Add-Member ScriptMethod Kill { param([bool] $Tree)
+            $this.Events.Add('kill'); $this.TreeKill = $Tree
+            if ($this.Mode -eq 'kill-fail') { throw 'SYNTHETIC_PRIVATE_KILL' }
+            $this.Killed = $true
+        }
+        $script:fake | Add-Member ScriptMethod WaitForExit { param([int] $Milliseconds)
+            $this.Waits.Add($Milliseconds)
+            if ($Milliseconds -lt 0 -or $Milliseconds -gt 80) { throw 'BAD_WAIT_BOUND' }
+            if ($this.Mode -eq 'wait-fail' -and -not $this.Killed) { throw 'SYNTHETIC_PRIVATE_WAIT' }
+            if ($this.Mode -eq 'stop-wait-fail' -and $this.Killed) { throw 'SYNTHETIC_PRIVATE_WAIT' }
+            if ($this.Mode -in @('never-stop', 'kill-fail', 'stop-wait-fail')) { return $false }
+            if (-not $this.Killed -and $this.Mode -notin @('success', 'fixed-error', 'stdout-exact', 'stderr-exact')) { return $false }
+            if (-not $this.Confirmed) {
+                if (-not $this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_URL') -or
+                    -not $this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_TOKEN')) { throw 'PREMATURE_INPUT_RELEASE' }
+                $this.Events.Add('confirmed')
+            }
+            $this.Confirmed = $true
+            return $true
+        }
+        $script:fake | Add-Member ScriptMethod Dispose {
+            $this.Events.Add('dispose'); $this.Disposed = $true
+            if ($this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_URL') -or
+                $this.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_TOKEN')) { throw 'INPUT_NOT_REMOVED' }
+        }
+        return $script:fake
+    }
+} -ArgumentList $functions, $PSScriptRoot
+try {
+    & $supervisor {
+        if ($script:productionLimits.RuntimeMs -ne 60000 -or $script:productionLimits.StopMs -ne 5000 -or
+            $script:productionLimits.OutChars -ne 2048 -or $script:productionLimits.ErrChars -ne 128) { throw 'BAD_PRODUCTION_LIMITS' }
+    }
+    $script:cases++
+    foreach ($mode in @('success', 'fixed-error', 'timeout', 'stdout-limit', 'stderr-limit', 'stdout-exact',
+        'stderr-exact', 'read-throw', 'read-fault', 'wait-fail', 'start-false', 'start-throw', 'never-stop', 'kill-fail', 'stop-wait-fail')) {
+        & $supervisor { param($Mode) $script:mode = $Mode } $mode
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $output = Capture-M1 { & $supervisor { Invoke-M1InspectLauncher } }
+        Assert-M1 ($clock.ElapsedMilliseconds -lt 3000)
+        if ($mode -eq 'success') {
+            if ($output.Code -ne 0) {
+                $diagnostic = & $supervisor { return ($script:fake.Events -join ',') + ';reads=' + $script:outPipe.Offset + ',' + $script:errPipe.Offset }
+                throw ('SUPERVISOR_FIXTURE_FAILURE ' + $diagnostic)
+            }
+            Assert-M1 ($output.Code -eq 0 -and $output.Err -eq '')
+        } else {
+            $expected = switch ($mode) {
+                'timeout' { 'M1_LAUNCHER_TIMEOUT' }
+                { $_ -in @('stdout-limit', 'stderr-limit') } { 'M1_LAUNCHER_OUTPUT_LIMIT' }
+                { $_ -in @('never-stop', 'kill-fail', 'stop-wait-fail') } { 'M1_LAUNCHER_STOP_UNCONFIRMED' }
+                'fixed-error' { 'M1_MIGRATION_SOURCE_SCHEMA' }
+                default { 'M1_LAUNCHER_FAILED' }
+            }
+            Assert-M1 ($output.Code -eq 1 -and $output.Out -eq '' -and $output.Err.Trim() -ceq $expected)
+        }
+        Assert-M1 (-not ($output.Out + $output.Err).Contains('SYNTHETIC_PRIVATE'))
+        Assert-M1 (-not ($output.Out + $output.Err).Contains('supervisor-synthetic.invalid'))
+        & $supervisor {
+            if (-not $script:fake.Disposed) { throw 'NOT_DISPOSED' }
+            $needsKill = $script:mode -notin @('success', 'fixed-error', 'stdout-exact', 'stderr-exact', 'start-false')
+            if ($needsKill -and -not $script:fake.TreeKill) { throw 'TREE_KILL_MISSING' }
+            if ($script:fake.Confirmed -and
+                $script:fake.Events.IndexOf('confirmed') -ge $script:fake.Events.IndexOf('dispose')) { throw 'DISPOSE_BEFORE_CONFIRMATION' }
+            if ($script:fake.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_URL') -or
+                $script:fake.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_TOKEN')) { throw 'INPUT_RETAINED' }
+            if ($script:outPipe.LargestRead -gt 256 -or $script:errPipe.LargestRead -gt 129 -or
+                $script:outPipe.Offset -gt 2049 -or $script:errPipe.Offset -gt 129) { throw 'UNBOUNDED_READ' }
+        }
+        Assert-M1 ([Environment]::GetEnvironmentVariable('M1_PRODUCTION_REDIS_URL', 'Process') -ceq 'SYNTHETIC_PARENT_URL')
+        Assert-M1 ([Environment]::GetEnvironmentVariable('M1_PRODUCTION_REDIS_TOKEN', 'Process') -ceq 'SYNTHETIC_PARENT_TOKEN')
+        $script:cases++
+    }
+} finally { Remove-Module $supervisor }
+
+# Real, owned Node fixture + grandchild: no loader, SDK, file I/O, or networking.
+# PID handoff is synthetic test metadata only, consumed in memory without display.
+$real = New-Module -ScriptBlock {
+    param($Code, $Root)
+    . ([scriptblock]::Create($Code))
+    $script:M1InspectDirectory = $Root
+    function script:Get-M1InspectLimits { return @{ RuntimeMs = 1500; StopMs = 1000; PollMs = 10; OutChars = 2048; ErrChars = 128 } }
+    function script:Test-M1InteractiveConsole { return $true }
+    function script:Read-M1HiddenValue([string] $Label, [int] $Limit) {
+        $secret = [Security.SecureString]::new()
+        $text = if ($Label.Contains('URL')) { 'https://owned-fixture.invalid' } else { 'SYNTHETIC_OWNED_TOKEN' }
+        foreach ($c in $text.ToCharArray()) { $secret.AppendChar($c) }
+        return $secret
+    }
+    function script:New-M1InspectChild {
+        $info = [Diagnostics.ProcessStartInfo]::new()
+        $info.FileName = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+        $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+        $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+        [void] $info.Environment.Remove('NODE_OPTIONS')
+        [void] $info.Environment.Remove('NODE_PATH')
+        $fixture = @'
+const {spawn} = require('node:child_process');
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore', windowsHide: true});
+process.stdout.write(String(child.pid) + '\n');
+const mode = process.argv[1];
+if (mode === 'stdout-limit') process.stdout.write('SYNTHETIC_PRIVATE_FLOOD'.repeat(1000));
+if (mode === 'stderr-limit') process.stderr.write('SYNTHETIC_PRIVATE_FLOOD'.repeat(1000));
+setInterval(() => {}, 1000);
+'@
+        $info.ArgumentList.Add('-e'); $info.ArgumentList.Add($fixture); $info.ArgumentList.Add($script:mode)
+        $owned = [Diagnostics.Process]::new(); $owned.StartInfo = $info
+        $script:proxy = [pscustomobject]@{ Owned = $owned; StartInfo = $info; StandardInput = $null;
+            StandardOutput = $null; StandardError = $null; RootObserver = $null; Descendant = $null;
+            Confirmed = $false; Disposed = $false; TreeKill = $false }
+        $script:proxy | Add-Member ScriptMethod Start {
+            if (-not $this.Owned.Start()) { return $false }
+            $this.RootObserver = [Diagnostics.Process]::GetProcessById($this.Owned.Id)
+            $this.StandardInput = $this.Owned.StandardInput
+            $this.StandardOutput = $this.Owned.StandardOutput
+            $this.StandardError = $this.Owned.StandardError
+            $line = $this.StandardOutput.ReadLineAsync()
+            if (-not $line.Wait(3000)) { throw 'FIXTURE_START_TIMEOUT' }
+            $pidText = $line.GetAwaiter().GetResult()
+            if ($pidText -notmatch '\A[0-9]{1,10}\z') { throw 'FIXTURE_PID_FAILED' }
+            $this.Descendant = [Diagnostics.Process]::GetProcessById([int] $pidText)
+            return $true
+        }
+        $script:proxy | Add-Member ScriptMethod WaitForExit { param([int] $Milliseconds)
+            $ended = $this.Owned.WaitForExit($Milliseconds)
+            if ($ended) { $this.Confirmed = $true }
+            return $ended
+        }
+        $script:proxy | Add-Member ScriptMethod Kill { param([bool] $Tree)
+            $this.TreeKill = $Tree; $this.Owned.Kill($Tree)
+        }
+        $script:proxy | Add-Member ScriptMethod Dispose {
+            if (-not $this.Confirmed) { throw 'FIXTURE_DISPOSE_BEFORE_CONFIRMATION' }
+            $this.Disposed = $true; $this.Owned.Dispose()
+        }
+        return $script:proxy
+    }
+} -ArgumentList $functions, $PSScriptRoot
+try {
+    foreach ($mode in @('timeout', 'stdout-limit', 'stderr-limit')) {
+        & $real { param($Mode) $script:mode = $Mode; $script:proxy = $null } $mode
+        try {
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $output = Capture-M1 { & $real { Invoke-M1InspectLauncher } }
+            Assert-M1 ($clock.ElapsedMilliseconds -lt 7000)
+            $expected = if ($mode -eq 'timeout') { 'M1_LAUNCHER_TIMEOUT' } else { 'M1_LAUNCHER_OUTPUT_LIMIT' }
+            Assert-M1 ($output.Code -eq 1 -and $output.Out -eq '' -and $output.Err.Trim() -ceq $expected)
+            & $real {
+                if (-not $script:proxy.TreeKill -or -not $script:proxy.Confirmed -or -not $script:proxy.Disposed -or
+                    -not $script:proxy.RootObserver.WaitForExit(2000) -or
+                    -not $script:proxy.Descendant.WaitForExit(2000)) { throw 'OWNED_TREE_NOT_STOPPED' }
+                if ($script:proxy.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_URL') -or
+                    $script:proxy.StartInfo.Environment.ContainsKey('M1_PRODUCTION_REDIS_TOKEN')) { throw 'OWNED_INPUT_RETAINED' }
+            }
+            Assert-M1 ([Environment]::GetEnvironmentVariable('M1_PRODUCTION_REDIS_URL', 'Process') -ceq 'SYNTHETIC_PARENT_URL')
+            Assert-M1 ([Environment]::GetEnvironmentVariable('M1_PRODUCTION_REDIS_TOKEN', 'Process') -ceq 'SYNTHETIC_PARENT_TOKEN')
+            $script:cases++
+        } finally {
+            # Failure cleanup is restricted to handles created by this synthetic fixture.
+            & $real {
+                if ($null -ne $script:proxy) {
+                    foreach ($owned in @($script:proxy.RootObserver, $script:proxy.Descendant)) {
+                        if ($null -ne $owned) {
+                            try { if (-not $owned.HasExited) { $owned.Kill($true); [void] $owned.WaitForExit(2000) } }
+                            finally { $owned.Dispose() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+} finally { Remove-Module $real }
 
 # Execute only early rejection paths of the real script in a redirected PowerShell child.
 # No Node child is reachable; no input is requested and no real values are provided.
