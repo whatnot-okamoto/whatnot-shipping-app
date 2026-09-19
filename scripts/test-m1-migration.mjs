@@ -251,12 +251,21 @@ fs.readFileSync = function(file, ...args) { checkPath(file); return savedReads.s
 fs.readFile = function(file, ...args) { checkPath(file); return savedReads.callback.call(this, file, ...args); };
 fsPromises.readFile = function(file, ...args) { checkPath(file); return savedReads.promise.call(this, file, ...args); };
 syncBuiltinESMExports();
-process.env.M1_TEST_ONLY_TOKEN = 'synthetic-not-a-real-token';
+const setInputs = (endpoint = 'https://m1-fixture.invalid', token = 'synthetic-not-a-real-token') => {
+  if (endpoint === null) delete process.env.M1_TEST_ONLY_URL;
+  else process.env.M1_TEST_ONLY_URL = endpoint;
+  if (token === null) delete process.env.M1_TEST_ONLY_TOKEN;
+  else process.env.M1_TEST_ONLY_TOKEN = token;
+};
+setInputs();
 const requests = [];
-const cliArgs = ['inspect', '--url', 'https://m1-fixture.invalid', '--token-env', 'M1_TEST_ONLY_TOKEN'];
+const cliArgs = ['inspect', '--url-env', 'M1_TEST_ONLY_URL', '--token-env', 'M1_TEST_ONLY_TOKEN'];
 try {
   globalThis.fetch = async (url, options) => {
+    assert.equal(process.env.M1_TEST_ONLY_URL, undefined, 'URL env consumed before adapter communication');
+    assert.equal(process.env.M1_TEST_ONLY_TOKEN, undefined, 'token env consumed before adapter communication');
     assert.equal(url, 'https://m1-fixture.invalid');
+    assert.equal(new Headers(options.headers).get('authorization'), 'Bearer synthetic-not-a-real-token');
     const command = JSON.parse(options.body); requests.push(command);
     assert.equal(command[0], 'eval'); assert.equal(command[2], 1);
     assert.equal(command[1].match(/redis\.call/g)?.length, 1);
@@ -269,17 +278,53 @@ try {
   assert.deepEqual(await capture(main, cliArgs), { code: 0, out: [JSON.stringify(success)], err: [] });
   assert.equal(requests.length, 3); count++;
   requests.length = 0;
+  for (const [endpoint, token, code] of [
+    [null, 'synthetic-not-a-real-token', 'M1_CLI_TARGET'], ['', 'synthetic-not-a-real-token', 'M1_CLI_TARGET'],
+    [' ', 'synthetic-not-a-real-token', 'M1_CLI_TARGET'], ['PRIVATE_URL_SENTINEL', 'x', 'M1_CLI_TARGET'],
+    ['http://m1-fixture.invalid', 'x', 'M1_CLI_TARGET'], ['https://name:pass@m1-fixture.invalid', 'x', 'M1_CLI_TARGET'],
+    ['https://m1-fixture.invalid?secret=PRIVATE_URL_SENTINEL', 'x', 'M1_CLI_TARGET'],
+    ['https://m1-fixture.invalid#PRIVATE_URL_SENTINEL', 'x', 'M1_CLI_TARGET'],
+    ['https://m1-fixture.invalid\n', 'x', 'M1_CLI_TARGET'],
+    ['https://m1-fixture.invalid', null, 'M1_CLI_CREDENTIAL_REQUIRED'],
+    ['https://m1-fixture.invalid', '', 'M1_CLI_CREDENTIAL_REQUIRED'],
+    ['https://m1-fixture.invalid', ' ', 'M1_CLI_CREDENTIAL_REQUIRED'],
+    ['https://m1-fixture.invalid', 'PRIVATE_TOKEN_SENTINEL\n', 'M1_CLI_CREDENTIAL_REQUIRED'],
+  ]) {
+    setInputs(endpoint, token);
+    assert.deepEqual(await capture(main, cliArgs), { code: 1, out: [], err: [code] });
+    assert.equal(process.env.M1_TEST_ONLY_URL, undefined);
+    assert.equal(process.env.M1_TEST_ONLY_TOKEN, undefined);
+    assert.equal(requests.length, 0); count++;
+  }
+  for (const args of [
+    ['inspect', '--url', 'https://PRIVATE_URL_SENTINEL.invalid', '--token-env', 'M1_TEST_ONLY_TOKEN'],
+    [...cliArgs, '--url', 'https://PRIVATE_URL_SENTINEL.invalid'],
+    [...cliArgs, '--url-env', 'M1_TEST_ONLY_URL'],
+  ]) {
+    assert.deepEqual(await capture(main, args), { code: 1, out: [], err: ['M1_CLI_ARGUMENT'] });
+    assert.equal(requests.length, 0); count++;
+  }
+  for (const args of [
+    ['inspect', '--url-env', 'M1_TEST_ONLY_URL'], ['inspect', '--token-env', 'M1_TEST_ONLY_TOKEN'],
+    ['inspect', '--url-env', 'M1_TEST_ONLY_URL', '--token-env', 'M1_TEST_ONLY_URL'],
+    ['inspect', '--url-env', 'BAD\n', '--token-env', 'M1_TEST_ONLY_TOKEN'],
+    ['inspect', '--url-env', 'M1_TEST_ONLY_URL', '--token-env', 'bad-name'],
+  ]) {
+    assert.deepEqual(await capture(main, args), { code: 1, out: [], err: ['M1_CLI_EXPLICIT_TARGET_REQUIRED'] });
+    assert.equal(requests.length, 0); count++;
+  }
   assert.deepEqual(await capture(main, ['inspect']),
     { code: 1, out: [], err: ['M1_CLI_EXPLICIT_TARGET_REQUIRED'] });
   assert.equal(requests.length, 0); count++;
   let failures = 0;
+  setInputs();
   globalThis.fetch = async () => { failures++; throw new Error('PRIVATE_RAW_SENTINEL https://fixture.invalid token=FAKE'); };
   assert.deepEqual(await capture(main, cliArgs), { code: 1, out: [], err: ['M1_MIGRATION_FAILED'] });
   assert.equal(failures, 1, 'no automatic retry'); count++;
   assert.equal(dotenvReads, 0);
 } finally {
   fs.readFileSync = savedReads.sync; fs.readFile = savedReads.callback; fsPromises.readFile = savedReads.promise;
-  syncBuiltinESMExports(); delete process.env.M1_TEST_ONLY_TOKEN;
+  syncBuiltinESMExports(); delete process.env.M1_TEST_ONLY_TOKEN; delete process.env.M1_TEST_ONLY_URL;
   globalThis.fetch = async () => { throw new Error('NETWORK_FORBIDDEN'); };
 }
 {

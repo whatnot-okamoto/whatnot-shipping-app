@@ -16,17 +16,27 @@ export async function main(argv = process.argv.slice(2)) {
   if (!['inspect', 'status', 'apply'].includes(command)) throw new Error('M1_CLI_COMMAND');
   const options = new Map();
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--url', '--token-env', '--expected-fingerprint', '--drained', '--limits-verified'].includes(args[i]) ||
+    if (!['--url-env', '--token-env', '--expected-fingerprint', '--drained', '--limits-verified'].includes(args[i]) ||
         !args[i + 1] || options.has(args[i])) throw new Error('M1_CLI_ARGUMENT');
     options.set(args[i], args[i + 1]);
   }
-  const endpoint = options.get('--url');
-  const variable = options.get('--token-env');
-  if (!endpoint || !variable || !/^[A-Z][A-Z0-9_]*$/.test(variable)) throw new Error('M1_CLI_EXPLICIT_TARGET_REQUIRED');
-  const url = new URL(endpoint);
+  const urlVariable = options.get('--url-env');
+  const tokenVariable = options.get('--token-env');
+  if (!urlVariable || !tokenVariable || !/^[A-Z][A-Z0-9_]*$/.test(urlVariable) ||
+      !/^[A-Z][A-Z0-9_]*$/.test(tokenVariable) || urlVariable.trim() !== urlVariable ||
+      tokenVariable.trim() !== tokenVariable || urlVariable === tokenVariable) {
+    throw new Error('M1_CLI_EXPLICIT_TARGET_REQUIRED');
+  }
+  // Consume only the explicitly named child-process entries. Do not enumerate the environment.
+  let endpoint, token;
+  try { endpoint = process.env[urlVariable]; token = process.env[tokenVariable]; }
+  finally { delete process.env[urlVariable]; delete process.env[tokenVariable]; }
+  if (!endpoint || endpoint.trim() !== endpoint || [...endpoint].some(c => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127)) throw new Error('M1_CLI_TARGET');
+  let url;
+  try { url = new URL(endpoint); } catch { throw new Error('M1_CLI_TARGET'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('M1_CLI_TARGET');
-  const token = process.env[variable];
-  if (!token) throw new Error('M1_CLI_CREDENTIAL_REQUIRED');
+  if (!token || !token.trim() || [...token].some(c => [0, 10, 13].includes(c.charCodeAt(0)))) throw new Error('M1_CLI_CREDENTIAL_REQUIRED');
+  // Deleting env entries does not guarantee erasure of the strings used by the live adapter.
   if (command === 'apply' && (options.get('--drained') !== 'true' || options.get('--limits-verified') !== 'true' ||
       !/^[a-f0-9]{64}$/.test(options.get('--expected-fingerprint') ?? ''))) throw new Error('M1_CLI_PREFLIGHT_REQUIRED');
   // Loading the adapter must not instantiate an implicit real connection.
