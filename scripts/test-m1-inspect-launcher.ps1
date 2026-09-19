@@ -28,6 +28,74 @@ function Capture-M1([scriptblock] $Action) {
     } finally { [Console]::SetOut($savedOut); [Console]::SetError($savedErr); $out.Dispose(); $err.Dispose() }
 }
 
+# Exercise the production input loop with synthetic key events, not an interactive console.
+# Only the internal console read is replaced; no new launcher input parameters are exposed.
+$inputModule = New-Module -ScriptBlock {
+    param($Code)
+    . ([scriptblock]::Create($Code))
+    function script:Read-M1ConsoleKey {
+        if ($script:keys.Count -eq 0) { throw 'SYNTHETIC_PRIVATE_READ_FAILURE' }
+        return $script:keys.Dequeue()
+    }
+} -ArgumentList $functions
+try {
+    foreach ($mode in @('characters', 'backspace', 'empty-backspace', 'limit', 'overflow',
+        'empty', 'escape', 'ctrl-c', 'control', 'read-failure')) {
+        & $inputModule {
+            param($Mode)
+            $script:keys = [Collections.Generic.Queue[object]]::new()
+            $script:limit = 4
+            $script:expectedValue = 'abc'; $script:expectedMask = '***'; $script:success = $true
+            $events = @('a', 'b', 'c', 'Enter')
+            switch ($Mode) {
+                'backspace' { $events = @('a', 'b', 'Backspace', 'c', 'Enter'); $script:expectedValue = 'ac'; $script:expectedMask = "**`b `b*" }
+                'empty-backspace' { $events = @('Backspace', 'a', 'Enter'); $script:expectedValue = 'a'; $script:expectedMask = '*' }
+                'limit' { $events = @('a', 'b', 'c', 'd', 'Enter'); $script:expectedValue = 'abcd'; $script:expectedMask = '****' }
+                'overflow' { $events = @('a', 'b', 'c', 'd', 'e'); $script:expectedMask = '****'; $script:success = $false }
+                'empty' { $events = @('Enter'); $script:expectedMask = ''; $script:success = $false }
+                'escape' { $events = @('a', 'Escape'); $script:expectedMask = '*'; $script:success = $false }
+                'ctrl-c' { $events = @('a', 'CtrlC'); $script:expectedMask = '*'; $script:success = $false }
+                'control' { $events = @('a', 'Tab'); $script:expectedMask = '*'; $script:success = $false }
+                'read-failure' { $events = @('a'); $script:expectedMask = '*'; $script:success = $false }
+            }
+            foreach ($event in $events) {
+                $key = switch ($event) {
+                    'Enter' { [ConsoleKeyInfo]::new([char]13, [ConsoleKey]::Enter, $false, $false, $false) }
+                    'Backspace' { [ConsoleKeyInfo]::new([char]8, [ConsoleKey]::Backspace, $false, $false, $false) }
+                    'Escape' { [ConsoleKeyInfo]::new([char]27, [ConsoleKey]::Escape, $false, $false, $false) }
+                    'CtrlC' { [ConsoleKeyInfo]::new([char]3, [ConsoleKey]::C, $false, $false, $true) }
+                    'Tab' { [ConsoleKeyInfo]::new([char]9, [ConsoleKey]::Tab, $false, $false, $false) }
+                    default { [ConsoleKeyInfo]::new([char]$event, [ConsoleKey]::A, $false, $false, $false) }
+                }
+                $script:keys.Enqueue($key)
+            }
+            $script:actual = $null
+        } $mode
+        $output = Capture-M1 { & $inputModule {
+            try { $script:actual = Read-M1HiddenValue 'Fixture' $script:limit; return 0 }
+            catch { [Console]::Error.WriteLine('M1_LAUNCHER_FAILED'); return 1 }
+        } }
+        $expected = & $inputModule {
+            $expectedText = 'Fixture: ' + $script:expectedMask
+            if ($script:success -or ($script:keys.Count -eq 0 -and $script:expectedMask -eq '')) {
+                $expectedText += [Environment]::NewLine
+            }
+            return @{ Code = $(if ($script:success) { 0 } else { 1 }); Out = $expectedText;
+                Err = $(if ($script:success) { '' } else { 'M1_LAUNCHER_FAILED' + [Environment]::NewLine }) }
+        }
+        Assert-M1 ($output.Code -eq $expected.Code -and $output.Out -ceq $expected.Out -and $output.Err -ceq $expected.Err)
+        & $inputModule {
+            if ($null -ne $script:actual) {
+                try {
+                    if (-not $script:actual.IsReadOnly() -or
+                        (Convert-M1HiddenValue $script:actual) -cne $script:expectedValue) { throw 'MASKED_INPUT_MISMATCH' }
+                } finally { $script:actual.Dispose(); $script:actual = $null }
+            }
+        }
+        $script:cases++
+    }
+} finally { Remove-Module $inputModule }
+
 # Inspect actual ProcessStartInfo without starting the child. Only named synthetic entries are read.
 & $module {
     $child = New-M1InspectChild

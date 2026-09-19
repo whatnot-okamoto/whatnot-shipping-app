@@ -7,22 +7,33 @@ function Test-M1InteractiveConsole {
     return -not ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected -or [Console]::IsErrorRedirected)
 }
 
+function Read-M1ConsoleKey {
+    return [Console]::ReadKey($true)
+}
+
 function Read-M1HiddenValue([string] $Label, [int] $Limit) {
     $secret = [Security.SecureString]::new()
     try {
         [Console]::Write($Label + ': ')
         while ($true) {
-            $key = [Console]::ReadKey($true)
+            $key = Read-M1ConsoleKey
             if ($key.Key -eq [ConsoleKey]::Enter) { break }
             if ($key.Key -eq [ConsoleKey]::Escape -or
                 (($key.Modifiers -band [ConsoleModifiers]::Control) -and $key.Key -eq [ConsoleKey]::C)) {
                 throw 'M1_LAUNCHER_FAILED'
             }
             if ($key.Key -eq [ConsoleKey]::Backspace) {
-                if ($secret.Length -gt 0) { $secret.RemoveAt($secret.Length - 1) }
+                if ($secret.Length -gt 0) {
+                    $secret.RemoveAt($secret.Length - 1)
+                    [Console]::Write("`b `b")
+                }
             } elseif ([char]::IsControl($key.KeyChar) -or $secret.Length -ge $Limit) {
                 throw 'M1_LAUNCHER_FAILED'
-            } else { $secret.AppendChar($key.KeyChar) }
+            } else {
+                $secret.AppendChar($key.KeyChar)
+                # Only input length is visible; never echo the character or accumulated value.
+                [Console]::Write('*')
+            }
         }
         [Console]::WriteLine()
         if ($secret.Length -eq 0) { throw 'M1_LAUNCHER_FAILED' }
