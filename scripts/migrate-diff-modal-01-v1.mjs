@@ -1,6 +1,15 @@
 // One-time operator CLI. NEVER run against an actual service during local development.
 // Invoke with the existing typescript-test-loader. No dotenv, default endpoint, or credential fallback.
 import { randomUUID } from 'node:crypto';
+import { validateMigrationResult } from './migrations/diff-modal-01-v1.ts';
+
+const SAFE_ERRORS = new Set([
+  'M1_CLI_COMMAND', 'M1_CLI_ARGUMENT', 'M1_CLI_EXPLICIT_TARGET_REQUIRED', 'M1_CLI_TARGET',
+  'M1_CLI_CREDENTIAL_REQUIRED', 'M1_CLI_PREFLIGHT_REQUIRED', 'M1_CLI_LEASE_BUSY', 'M1_CLI_OUTPUT_INVALID',
+  'M1_MIGRATION_RECORD_MISMATCH', 'M1_MIGRATION_ADOPTION_MISMATCH', 'M1_MIGRATION_SOURCE_MISSING',
+  'M1_MIGRATION_SOURCE_CHANGED', 'M1_MIGRATION_SOURCE_SCHEMA', 'M1_MIGRATION_RECORD_LIMIT',
+  'M1_MIGRATION_CONFLICT', 'M1_VALUE_LIMIT', 'M1_RAW_RESPONSE',
+]);
 
 export async function main(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
@@ -34,9 +43,17 @@ export async function main(argv = process.argv.slice(2)) {
   finally { await store.compareAndDelete(leaseKey, lease); }
 }
 
+export async function runCli(argv = process.argv.slice(2), execute = main) {
+  try {
+    const result = validateMigrationResult(await execute(argv));
+    console.log(JSON.stringify(result));
+    return 0;
+  } catch (error) {
+    console.error(SAFE_ERRORS.has(error?.message) ? error.message : 'M1_MIGRATION_FAILED');
+    return 1;
+  }
+}
+
 if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL(process.argv[1]).href) {
-  main().then(result => console.log(JSON.stringify(result))).catch(error => {
-    console.error(/^M1_[A-Z_]+$/.test(error?.message ?? '') ? error.message : 'M1_MIGRATION_FAILED');
-    process.exitCode = 1;
-  });
+  process.exitCode = await runCli();
 }
